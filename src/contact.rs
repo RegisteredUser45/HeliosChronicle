@@ -499,6 +499,51 @@ pub fn mark_system_surveyed(world: &mut World, empire: EmpireId, system: EntityI
     !was
 }
 
+
+/// Fulfill an active SurveyCharter: both parties mark `system` surveyed (fuse known).
+pub fn fulfill_survey_charter(
+    world: &mut World,
+    contract_id: EntityId,
+    system: EntityId,
+) -> bool {
+    let mut parties: Option<(EmpireId, EmpireId)> = None;
+    for contact in world.contact.empires.values() {
+        if let Some(con) = contact.contracts.iter().find(|c| c.id == contract_id) {
+            if con.defaulted || con.end_tick.is_some() {
+                return false;
+            }
+            if con.kind != ContractKind::SurveyCharter {
+                return false;
+            }
+            parties = Some((con.a, con.b));
+            break;
+        }
+    }
+    let Some((a, b)) = parties else {
+        return false;
+    };
+    mark_system_surveyed(world, a, system);
+    mark_system_surveyed(world, b, system);
+    // Slight fog upgrade for both (survey product).
+    upgrade_fog(world, a, system);
+    upgrade_fog(world, b, system);
+    push_contact_hot_empires(world, a, b);
+    world.recompute_outcome_hash();
+    true
+}
+
+/// Grow fleet-fog uncertainty for one observer (quiet ticks without a fresh fix).
+pub fn decay_fleet_fog(world: &mut World, observer: EmpireId, factor: f64) {
+    let factor = factor.clamp(1.0, 4.0);
+    let Some(contact) = world.contact.empires.get_mut(&observer) else {
+        return;
+    };
+    for entry in contact.fog.known_fleets.values_mut() {
+        entry.uncertainty = (entry.uncertainty * factor).min(1.0);
+    }
+    world.recompute_outcome_hash();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +688,37 @@ mod tests {
         let fog = w.contact.get(e).unwrap().fog.known_systems.get(&system).unwrap();
         assert!(fog.surveyed_fuse);
         assert!(!mark_system_surveyed(&mut w, e, system));
+    }
+
+
+    #[test]
+    fn fulfill_survey_charter_marks_both() {
+        let mut w = World::new(90);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        let id = sign_contract(&mut w, a, b, ContractKind::SurveyCharter);
+        assert!(fulfill_survey_charter(&mut w, id, system));
+        for e in [a, b] {
+            let fog = &w.contact.get(e).unwrap().fog.known_systems[&system];
+            assert!(fog.surveyed_fuse);
+        }
+        // Freight contract cannot fulfill as survey.
+        let freight = sign_contract(&mut w, a, b, ContractKind::Freight);
+        assert!(!fulfill_survey_charter(&mut w, freight, system));
+    }
+
+    #[test]
+    fn decay_fleet_fog_raises_uncertainty() {
+        let mut w = World::new(91);
+        let e = EmpireId(3);
+        let fleet = EntityId(99);
+        sense_fleet(&mut w, e, fleet, None);
+        let u0 = w.contact.get(e).unwrap().fog.known_fleets[&fleet].uncertainty;
+        decay_fleet_fog(&mut w, e, 2.0);
+        let u1 = w.contact.get(e).unwrap().fog.known_fleets[&fleet].uncertainty;
+        assert!(u1 > u0);
+        assert!(u1 <= 1.0);
     }
 
 }
