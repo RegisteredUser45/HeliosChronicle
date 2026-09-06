@@ -59,6 +59,10 @@ On `HomeFlagClear` (operator or future B collapse path):
 Re-score runs **before further AI orders** in that tick once scoring is wired.
 
 
+## Evacuate execution (D)
+
+Ai `OrderIntent::Evacuate` with a system target calls `execute_evacuate_intent` → D `evacuate_body` on all bodies with pops. `leave_automation` is true when empire `evacuate_vs_die_in_place` ≥ 0.5. Operator evacuations stay on `Operator::evacuate_colony`.
+
 ## LOD-aware minds tick (Issue 10)
 
 Under `LodMode::Coarse`, `minds_tick_stub` only emits for empires that need attention (`empire_needs_minds_tick`: Hot-hint system, or known DryFuse / HomePaused / Ended). Fine LOD still evaluates every empire. ≤1 Ai order per empire per tick; salt family never from scoring.

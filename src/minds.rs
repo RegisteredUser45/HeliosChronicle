@@ -16,6 +16,7 @@ use crate::event::EventKind;
 use crate::lod::{LodHint, LodMode};
 use crate::sky::{self, MapState};
 use crate::world::World;
+use crate::worlds;
 
 /// Binding remainder at/above which Feed systems prefer PlantCity / PlantYard.
 pub const LONG_FEED: f64 = 400.0;
@@ -225,6 +226,49 @@ pub fn is_salt_family(intent: OrderIntent) -> bool {
     )
 }
 
+/// Apply Evacuate intent to all bodies in a system (D `evacuate_body`).
+///
+/// `leave_automation` follows empire `evacuate_vs_die_in_place` (≥ 0.5 → leave
+/// ash automation running for C drains). No-op when no pops on any body.
+pub fn execute_evacuate_intent(
+    world: &mut World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) -> usize {
+    let leave_automation = world
+        .ledger
+        .get_empire(empire_id)
+        .map(|e| e.evacuate_vs_die_in_place >= 0.5)
+        .unwrap_or(true);
+    let body_ids: Vec<EntityId> = world
+        .ledger
+        .bodies_for_system(system_id)
+        .filter(|(_, b)| b.pops > 0.0)
+        .map(|(id, _)| *id)
+        .collect();
+    let tick = world.master_tick;
+    let mut n = 0usize;
+    for bid in body_ids {
+        if let Some(body) = world.ledger.get_body_mut(bid) {
+            worlds::evacuate_body(body, leave_automation);
+            n += 1;
+            world.log.append(
+                tick,
+                EventKind::OperatorMutation {
+                    entity: bid,
+                    field: "evacuate".into(),
+                    old: String::new(),
+                    new: format!(
+                        "ai_order leave_automation={leave_automation} empire={}",
+                        empire_id
+                    ),
+                },
+            );
+        }
+    }
+    n
+}
+
 /// Try to create an order on the ledger.
 ///
 /// Salt-family intents return `Ok(None)` when `salt_emit_enabled` is false, or
@@ -277,6 +321,12 @@ pub fn try_emit_order(
             intent: intent_s,
         },
     );
+    // Ai Evacuate → clear pops on system bodies via D evacuate_body.
+    if matches!(intent, OrderIntent::Evacuate) && matches!(source, OrderSource::Ai) {
+        if let Some(sys) = target_ref {
+            let _ = execute_evacuate_intent(world, empire_id, sys);
+        }
+    }
     Ok(Some(id))
 }
 
@@ -1336,6 +1386,40 @@ mod minds_tests {
     }
 
     #[test]
+
+    #[test]
+    fn ai_evacuate_clears_body_pops() {
+        let mut w = World::new(110);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let body = w.ledger.spawn_body(sys);
+        {
+            let b = w.ledger.get_body_mut(body).unwrap();
+            b.pops = 100.0;
+            b.automation_active = false;
+        }
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.evacuate_vs_die_in_place = 0.8;
+        }
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::Evacuate,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("evacuate order");
+        assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::Evacuate);
+        let b = w.ledger.get_body(body).unwrap();
+        assert_eq!(b.pops, 0.0);
+        assert!(
+            b.automation_active,
+            "high evacuate bias should leave automation"
+        );
+    }
+
     fn wilderness_unknown_not_infinite() {
         let mut w = World::new(56);
         let empire = *w.ledger.empires().next().unwrap().0;
