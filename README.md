@@ -24,6 +24,16 @@ Rust / Cargo library (`helios_chronicle`) + thin binary (`helios`).
 | Galaxy / sky hooks | Phase B headless slice (deplete/fuse/home/wilderness/spawn) |
 | Cosmology catalog v4 | Frozen dotted ids (`stock.ore_binding`, …) |
 
+## Phase J — Operator (stub slice)
+
+| Capability | Status |
+|---|---|
+| Possess / release empire | Stub — `Operator::possess` / `release`; events + save field |
+| AI skip while possessed | Done — `minds_tick_stub` skips possessed empire |
+| Injectors (force dry/pause/nova) | Not yet (rumor inject exists via knowledge) |
+| Replay from event log | Not yet (`verify` / seed path only) |
+| Headless `--possess <id>` | Done |
+
 ## Phase I — Minds (schema stub)
 
 Doctrine fields + Order entities on the **same Kernel ledger**. Scoring and salt/punish emit are **feature-flagged off** until B map bits and H knowledge objects land.

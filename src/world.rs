@@ -49,6 +49,9 @@ pub struct World {
     pub ships: BTreeMap<EntityId, ShipInstance>,
     #[serde(default)]
     pub labs: BTreeMap<EntityId, Lab>,
+    /// Phase J: empire currently possessed by the operator (`None` = none).
+    #[serde(default)]
+    pub possessed_empire: Option<EntityId>,
     /// Fingerprint of ledger + tick for cheap determinism checks.
     pub outcome_hash: u64,
 }
@@ -75,6 +78,7 @@ impl World {
             ship_designs: BTreeMap::new(),
             ships: BTreeMap::new(),
             labs: BTreeMap::new(),
+            possessed_empire: None,
             outcome_hash: 0,
         };
         world.log.append(0, EventKind::WorldCreated { seed });
@@ -162,6 +166,16 @@ impl World {
     /// Current tick dt from LOD mode.
     pub fn current_dt(&self) -> u64 {
         self.lod.dt(self.globals.coarse_dt)
+    }
+
+    /// Empire currently possessed by the operator, if any (Phase J).
+    pub fn possessed_empire(&self) -> Option<EntityId> {
+        self.possessed_empire
+    }
+
+    /// Whether `empire_id` is the currently possessed empire.
+    pub fn is_possessed(&self, empire_id: EntityId) -> bool {
+        self.possessed_empire == Some(empire_id)
     }
 
     /// Rebuild RNG at the current draw cursor (deterministic).

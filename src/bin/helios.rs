@@ -36,6 +36,9 @@ enum Commands {
         /// Demo operator mutation on first system (binding_remainder).
         #[arg(long, default_value_t = false)]
         demo_operator: bool,
+        /// Phase J: possess empire by entity id (logs EmpirePossessed).
+        #[arg(long)]
+        possess: Option<u64>,
     },
     /// Verify same seed ⇒ same outcomes (exit 0 on match).
     Verify {
@@ -71,6 +74,7 @@ fn main() {
             save,
             load,
             demo_operator,
+            possess,
         } => {
             let mut world = if let Some(path) = load {
                 println!("loading {}", path.display());
@@ -87,6 +91,13 @@ fn main() {
                 world.lod(),
                 world.current_dt()
             );
+
+            if let Some(eid) = possess {
+                use helios_chronicle::EntityId;
+                let mut op = Operator::new(&mut world);
+                op.possess(EntityId(eid)).expect("possess failed");
+                println!("operator: possessed empire {eid}");
+            }
 
             if demo_operator {
                 let first_id = world.ledger().systems().next().map(|(i, _)| *i);

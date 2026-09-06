@@ -658,6 +658,10 @@ pub fn minds_tick_stub(world: &mut World) {
     }
     let empire_ids: Vec<EntityId> = world.ledger.empires().map(|(id, _)| *id).collect();
     for empire_id in empire_ids {
+        // Phase J: operator-possessed empires are not AI-driven.
+        if world.is_possessed(empire_id) {
+            continue;
+        }
         if !empire_needs_minds_tick(world, empire_id) {
             continue;
         }
@@ -1368,6 +1372,26 @@ mod minds_tests {
         assert_eq!(
             w.ledger.get_order(id).unwrap().intent,
             OrderIntent::PunishSalter
+        );
+    }
+
+
+    #[test]
+    fn possessed_empire_skipped_by_minds_tick() {
+        let mut w = World::new(11);
+        w.minds_flags.scoring_enabled = true;
+        let empire = *w.ledger.empires().next().unwrap().0;
+        // Possess before ticking so AI cannot emit for this empire.
+        {
+            let mut op = crate::operator::Operator::new(&mut w);
+            op.possess(empire).unwrap();
+        }
+        let before = w.ledger.orders_len();
+        minds_tick_stub(&mut w);
+        assert_eq!(
+            w.ledger.orders_len(),
+            before,
+            "possessed empire must not receive AI orders"
         );
     }
 

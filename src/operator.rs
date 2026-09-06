@@ -925,6 +925,86 @@ impl<'a> Operator<'a> {
         }
     }
 
+    /// Phase J: possess an empire (select it for operator control).
+    ///
+    /// Logs [`EventKind::EmpirePossessed`]. AI minds skip the possessed empire
+    /// while possession is held. Replacing an existing possession releases the
+    /// prior empire first (logged).
+    pub fn possess(&mut self, empire_id: EntityId) -> Result<(), OperatorError> {
+        if self.world.ledger().get_empire(empire_id).is_none() {
+            return Err(OperatorError::NotFound(empire_id));
+        }
+        let tick = self.world.master_tick();
+        if let Some(prev) = self.world.possessed_empire {
+            if prev == empire_id {
+                return Ok(());
+            }
+            self.world.possessed_empire = None;
+            self.world
+                .log_mut()
+                .append(tick, EventKind::EmpireReleased { empire: prev });
+            self.world.log_mut().append(
+                tick,
+                EventKind::OperatorMutation {
+                    entity: prev,
+                    field: "possession".into(),
+                    old: "possessed".into(),
+                    new: "released".into(),
+                },
+            );
+        }
+        self.world.possessed_empire = Some(empire_id);
+        self.world
+            .log_mut()
+            .append(tick, EventKind::EmpirePossessed { empire: empire_id });
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: empire_id,
+                field: "possession".into(),
+                old: "none".into(),
+                new: "possessed".into(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Phase J: release current possession, if any.
+    pub fn release(&mut self) -> Option<EntityId> {
+        let tick = self.world.master_tick();
+        let prev = self.world.possessed_empire.take()?;
+        self.world
+            .log_mut()
+            .append(tick, EventKind::EmpireReleased { empire: prev });
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: prev,
+                field: "possession".into(),
+                old: "possessed".into(),
+                new: "released".into(),
+            },
+        );
+        Some(prev)
+    }
+
+    /// Currently possessed empire, if any.
+    pub fn possessed(&self) -> Option<EntityId> {
+        self.world.possessed_empire()
+    }
+
+    /// Issue an order as the possessed empire (errors if none possessed).
+    pub fn issue_order_as_possessed(
+        &mut self,
+        intent: &str,
+        target: Option<EntityId>,
+    ) -> Result<Option<EntityId>, OperatorError> {
+        let empire_id = self.possessed().ok_or_else(|| {
+            OperatorError::Other("no empire possessed".into())
+        })?;
+        self.issue_order(empire_id, intent, target)
+    }
+
     pub fn arm_fuse(&mut self, id: EntityId, end_tick: u64) -> Result<(), OperatorError> {
         let tick = self.world.master_tick();
         {
@@ -973,6 +1053,61 @@ mod tests {
     use super::*;
     use crate::research::{find_segment, unlock_segment};
     use crate::world::World;
+
+    #[test]
+    fn possess_empire_logs_and_selects() {
+        let mut w = World::new(7);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        {
+            let mut op = Operator::new(&mut w);
+            assert!(op.possessed().is_none());
+            op.possess(empire).unwrap();
+            assert_eq!(op.possessed(), Some(empire));
+            assert!(w.is_possessed(empire));
+        }
+        assert!(w.log().events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::EmpirePossessed { empire: id } if *id == empire
+        )));
+        assert!(w.log().events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::OperatorMutation { field, new, .. }
+                if field == "possession" && new == "possessed"
+        )));
+        {
+            let mut op = Operator::new(&mut w);
+            assert_eq!(op.release(), Some(empire));
+            assert!(op.possessed().is_none());
+        }
+        assert!(w.log().events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::EmpireReleased { empire: id } if *id == empire
+        )));
+    }
+
+    #[test]
+    fn possess_unknown_empire_errors() {
+        let mut w = World::new(7);
+        let mut op = Operator::new(&mut w);
+        let err = op.possess(EntityId(999_999)).unwrap_err();
+        assert!(matches!(err, OperatorError::NotFound(_)));
+    }
+
+    #[test]
+    fn issue_order_as_possessed_requires_possession() {
+        let mut w = World::new(7);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let mut op = Operator::new(&mut w);
+            let err = op.issue_order_as_possessed("expand_survey", Some(sys)).unwrap_err();
+            assert!(matches!(err, OperatorError::Other(_)));
+            op.possess(empire).unwrap();
+            // Expand may or may not create an order depending on flags; just ensure call succeeds.
+            let oid = op.issue_order_as_possessed("expand_survey", Some(sys)).unwrap();
+            assert!(oid.is_some());
+        }
+    }
 
     #[test]
     fn operator_ef_lab_to_ship_pipeline() {

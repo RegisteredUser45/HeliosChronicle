@@ -63,6 +63,14 @@ pub enum EventKind {
     EmpireSpawned {
         empire: EntityId,
     },
+    /// Phase J: operator selected / possessed this empire (AI minds skip it).
+    EmpirePossessed {
+        empire: EntityId,
+    },
+    /// Phase J: operator released possession of this empire.
+    EmpireReleased {
+        empire: EntityId,
+    },
     OrderCreated {
         order: EntityId,
         empire: EntityId,
