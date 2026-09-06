@@ -54,6 +54,18 @@ pub fn compute_deficits(body: &BodyEntity, envelope: &SpeciesEnvelope) -> Defici
 }
 
 /// Optional fuse-end / weapon layer burst (B/H write the same columns).
+
+/// Apply deficit mortality to pops for one tick (`dt` scales lightly). Returns new pops.
+pub fn apply_pop_deficits(body: &mut BodyEntity, envelope: &SpeciesEnvelope, dt: u64) -> f64 {
+    if body.pops <= 0.0 {
+        return 0.0;
+    }
+    let d = compute_deficits(body, envelope);
+    let loss = (d.mortality * 0.01 * dt as f64).min(body.pops);
+    body.pops = (body.pops - loss).max(0.0);
+    body.pops
+}
+
 pub fn apply_layer_burst(body: &mut BodyEntity, delta: &EnvLayers) {
     body.layers.atmosphere_pressure += delta.atmosphere_pressure;
     body.layers.temperature += delta.temperature;
@@ -107,5 +119,16 @@ mod tests {
         assert!((body.layers.radiation - 3.0).abs() < f64::EPSILON);
         assert!((body.layers.toxins_fallout - 1.0).abs() < f64::EPSILON);
         assert!((body.layers.biosphere - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn deficit_tick_reduces_pops() {
+        let mut body = BodyEntity::new(EntityId(3), EntityId(0));
+        body.pops = 100.0;
+        body.layers.radiation = 50.0;
+        let before = body.pops;
+        apply_pop_deficits(&mut body, &SpeciesEnvelope::default(), 10);
+        assert!(body.pops < before);
+        assert!(body.pops > 0.0);
     }
 }

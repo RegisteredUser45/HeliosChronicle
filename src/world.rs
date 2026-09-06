@@ -268,6 +268,17 @@ impl World {
         // Phase E: advance labs (segment RP; completions emit SegmentResearched).
         crate::research::tick_all_labs(self, dt);
 
+        // Phase D: apply envelope deficit mortality to pops.
+        {
+            let env = self.globals.envelope.clone();
+            let body_ids: Vec<_> = self.ledger.bodies().map(|(id, _)| *id).collect();
+            for bid in body_ids {
+                if let Some(body) = self.ledger.get_body_mut(bid) {
+                    crate::worlds::apply_pop_deficits(body, &env, dt);
+                }
+            }
+        }
+
         // Phase I: score known feed/fuse (no-op unless scoring_enabled).
         crate::minds::minds_tick_stub(self);
         self.recompute_outcome_hash();

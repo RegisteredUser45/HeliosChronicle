@@ -60,6 +60,7 @@ pub enum HullError {
     YardMaterials,
     InsufficientFuel,
     SystemNotFound,
+    UnknownAmmo(String),
 }
 
 impl std::fmt::Display for HullError {
@@ -78,6 +79,7 @@ impl std::fmt::Display for HullError {
             Self::YardMaterials => write!(f, "yard materials missing (hull_plate recipe)"),
             Self::InsufficientFuel => write!(f, "insufficient fuel"),
             Self::SystemNotFound => write!(f, "system not found"),
+            Self::UnknownAmmo(id) => write!(f, "unknown ammo {id}"),
         }
     }
 }
@@ -264,6 +266,62 @@ pub fn spend_fuel(ship: &mut ShipInstance, amount: f64) -> Result<f64, HullError
 }
 
 /// Build at a system yard: consume `recipe.hull_plate` via C matter, then spawn ship.
+
+/// Tool yard after consuming `recipe.yard_mk1` at the system (industry chain).
+pub fn tool_yard_at_system(
+    world: &mut World,
+    empire_id: EntityId,
+    design_id: EntityId,
+    system: EntityId,
+) -> Result<(), HullError> {
+    let ran = crate::matter::try_run_recipe(world, system, "recipe.yard_mk1")
+        .map_err(|_| HullError::YardMaterials)?;
+    if !ran {
+        return Err(HullError::YardMaterials);
+    }
+    tool_yard(world, empire_id, design_id)
+}
+
+/// Load magazine ammo on a ship (catalog id → qty). Additive.
+pub fn load_magazine(ship: &mut ShipInstance, ammo_id: &str, qty: f64) -> Result<f64, HullError> {
+    if ammo_id.is_empty() {
+        return Err(HullError::UnknownAmmo(ammo_id.into()));
+    }
+    if !qty.is_finite() || qty < 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    let e = ship.magazines.entry(ammo_id.to_string()).or_insert(0.0);
+    *e = (*e + qty).max(0.0);
+    Ok(*e)
+}
+
+/// Catalog recipe that produces this fuel tier (day-one map).
+pub fn fuel_recipe_for_tier(fuel_tier: &str) -> Option<&'static str> {
+    match fuel_tier {
+        "fuel.chemical" => Some("recipe.fuel_chem_refine"),
+        "fuel.fission" => Some("recipe.fuel_fission_pellet"),
+        "fuel.fusion" => Some("recipe.fuel_fusion_pellet"),
+        "fuel.antimatter" => Some("recipe.antimatter_synth"),
+        _ => None,
+    }
+}
+
+/// Refine the ship's fuel-tier recipe at system, then tank 1.0 unit.
+pub fn refine_ship_tier_fuel(
+    world: &mut World,
+    ship_id: EntityId,
+    system: EntityId,
+) -> Result<f64, HullError> {
+    let tier = world
+        .ships
+        .get(&ship_id)
+        .ok_or(HullError::ShipNotFound)?
+        .fuel_tier
+        .clone();
+    let recipe = fuel_recipe_for_tier(&tier).ok_or(HullError::BadFuel)?;
+    refine_fuel_at_system(world, ship_id, system, recipe)
+}
+
 pub fn build_ship_at_system(
     world: &mut World,
     empire_id: EntityId,
@@ -466,5 +524,49 @@ mod tests {
         assert!(can_move(w.ship_designs.get(&did).unwrap(), w.ships.get(&sid).unwrap()));
         spend_fuel(w.ships.get_mut(&sid).unwrap(), 1.0).unwrap();
         assert!(!can_move(w.ship_designs.get(&did).unwrap(), w.ships.get(&sid).unwrap()));
+    }
+
+    #[test]
+    fn fuel_recipe_map_covers_tiers() {
+        assert_eq!(fuel_recipe_for_tier("fuel.chemical"), Some("recipe.fuel_chem_refine"));
+        assert_eq!(fuel_recipe_for_tier("fuel.fusion"), Some("recipe.fuel_fusion_pellet"));
+        assert!(fuel_recipe_for_tier("fuel.nope").is_none());
+    }
+
+    #[test]
+    fn load_magazine_and_tool_yard_at_system() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(17);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        let did = register_design(
+            &mut w,
+            empire,
+            "gunboat",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.ore_binding", 20.0, 1.0, ExtractorKind::State)).unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.silicates", 8.0, 1.0, ExtractorKind::State)).unwrap();
+        tool_yard_at_system(&mut w, empire, did, system).unwrap();
+        let sid = build_ship(&mut w, empire, did, 2.0).unwrap();
+        let ship = w.ships.get_mut(&sid).unwrap();
+        assert!((load_magazine(ship, "ammo.kinetic", 10.0).unwrap() - 10.0).abs() < 1e-9);
+        let did2 = register_design(
+            &mut w,
+            empire,
+            "gunboat2",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        assert!(matches!(
+            tool_yard_at_system(&mut w, empire, did2, system).unwrap_err(),
+            HullError::YardMaterials
+        ));
     }
 }

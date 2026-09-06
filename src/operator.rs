@@ -282,6 +282,43 @@ impl<'a> Operator<'a> {
             .map_err(|e| OperatorError::Other(e.to_string()))
     }
 
+
+    /// Tool yard consuming recipe.yard_mk1 at system.
+    pub fn tool_ship_yard_at_system(
+        &mut self,
+        empire_id: EntityId,
+        design_id: EntityId,
+        system: EntityId,
+    ) -> Result<(), OperatorError> {
+        crate::hulls::tool_yard_at_system(self.world, empire_id, design_id, system)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Load ship magazine.
+    pub fn load_ship_magazine(
+        &mut self,
+        ship_id: EntityId,
+        ammo_id: &str,
+        qty: f64,
+    ) -> Result<f64, OperatorError> {
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        crate::hulls::load_magazine(ship, ammo_id, qty).map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Refine ship fuel by its design tier recipe.
+    pub fn refine_ship_tier_fuel(
+        &mut self,
+        ship_id: EntityId,
+        system: EntityId,
+    ) -> Result<f64, OperatorError> {
+        crate::hulls::refine_ship_tier_fuel(self.world, ship_id, system)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Tool yard for a design.
     pub fn tool_ship_yard(&mut self, empire_id: EntityId, design_id: EntityId) -> Result<(), OperatorError> {
         crate::hulls::tool_yard(self.world, empire_id, design_id)

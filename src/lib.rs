@@ -55,7 +55,7 @@ pub use politics::{
 };
 pub use save::{load_world, save_world, SaveError};
 pub use world::World;
-pub use worlds::{apply_layer_burst, compute_deficits, DeficitReport};
+pub use worlds::{apply_layer_burst, apply_pop_deficits, compute_deficits, DeficitReport};
 pub use sensors::{
     detect_strike, discover_wreck, in_sensor_range, receive_signal, sense_system,
     SENSOR_RANGE_STUB,
@@ -66,7 +66,7 @@ pub use violence::{
     SALT_RADIATION_DELTA, SALT_SEVERITY, SALT_TEMPERATURE_DELTA, SALT_TOXINS_DELTA,
 };
 pub use research::{assign_lab, empire_has_unlock, find_segment, gates_ref_catalog, line_prereqs_met, make_lab, salvage_unlock_segment, segment_rp_cost, stub_tech_book, tick_all_labs, tick_lab, tick_lab_on_world, unlock_segment, Lab, TechCategory, TechLine, TechSegment};
-pub use hulls::{apply_ship_damage, build_ship, build_ship_at_system, can_move, derive_fuel_tier, make_design, refine_fuel_at_system, refuel, refuel_from_system, register_design, spend_fuel, spawn_instance, tool_yard, HullError, ShipDesign, ShipInstance};
+pub use hulls::{apply_ship_damage, build_ship, build_ship_at_system, can_move, derive_fuel_tier, fuel_recipe_for_tier, load_magazine, make_design, refine_fuel_at_system, refine_ship_tier_fuel, refuel, refuel_from_system, register_design, spend_fuel, spawn_instance, tool_yard, tool_yard_at_system, HullError, ShipDesign, ShipInstance};
 pub use globals::{Band, SpeciesEnvelope};
 
 /// Run two worlds from the same seed for `ticks` and return whether outcomes match.
