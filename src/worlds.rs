@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::entity::{BodyEntity, EnvLayers};
+use crate::entity::{BodyEntity, EmpireEntity, EnvLayers};
 use crate::globals::SpeciesEnvelope;
 
 /// Continuous deficit overflow after structure/power/upkeep soak.
@@ -61,6 +61,21 @@ pub fn compute_deficits(body: &BodyEntity, envelope: &SpeciesEnvelope) -> Defici
 /// Returns (organics_need, volatiles_need) for `dt` ticks; caller (C/matter) may consume.
 
 /// Evacuate: clear pops. If `leave_automation`, ash automation may keep draining via C (L8).
+
+/// Facility unlocks soft-boost body soaks (D industry → world). Additive, no RNG.
+pub fn apply_facility_soaks(body: &mut BodyEntity, empire: &EmpireEntity) {
+    use crate::research::empire_has_unlock;
+    if empire_has_unlock(empire, "facility.habitat_seal") {
+        body.structure_soak = body.structure_soak.max(2.0);
+    }
+    if empire_has_unlock(empire, "facility.lab") {
+        body.power_soak = body.power_soak.max(1.0);
+    }
+    if empire_has_unlock(empire, "facility.mine_auto") {
+        body.upkeep_soak = body.upkeep_soak.max(1.0);
+    }
+}
+
 pub fn evacuate_body(body: &mut BodyEntity, leave_automation: bool) {
     body.pops = 0.0;
     if leave_automation {
@@ -269,5 +284,19 @@ mod tests {
         assert!(body.automation_active);
         evacuate_body(&mut body, false);
         assert!(!body.automation_active);
+    }
+
+    #[test]
+    fn facility_unlocks_boost_soaks() {
+        use crate::entity::EntityId;
+        use crate::globals::Globals;
+        use crate::research::{find_segment, unlock_segment};
+        let mut body = BodyEntity::new(EntityId(5), EntityId(0));
+        let mut empire = crate::entity::EmpireEntity::from_defaults(EntityId(1), &Globals::default(), None);
+        apply_facility_soaks(&mut body, &empire);
+        assert_eq!(body.structure_soak, 0.0);
+        unlock_segment(&mut empire, &find_segment("seg.habitat_seal").unwrap()).unwrap();
+        apply_facility_soaks(&mut body, &empire);
+        assert!((body.structure_soak - 2.0).abs() < 1e-9);
     }
 }

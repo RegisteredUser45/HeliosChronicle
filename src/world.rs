@@ -287,6 +287,20 @@ impl World {
             }
         }
 
+        // Phase D: facility unlocks soft-boost soaks on bodies (day-one: all empires).
+        {
+            let empire_ids: Vec<_> = self.ledger.empires().map(|(id, _)| *id).collect();
+            let body_ids: Vec<_> = self.ledger.bodies().map(|(id, _)| *id).collect();
+            for eid in empire_ids {
+                let Some(empire) = self.ledger.get_empire(eid).cloned() else { continue; };
+                for bid in &body_ids {
+                    if let Some(body) = self.ledger.get_body_mut(*bid) {
+                        crate::worlds::apply_facility_soaks(body, &empire);
+                    }
+                }
+            }
+        }
+
         // Phase I: score known feed/fuse (no-op unless scoring_enabled).
         crate::minds::minds_tick_stub(self);
         self.recompute_outcome_hash();

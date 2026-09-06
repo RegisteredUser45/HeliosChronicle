@@ -55,7 +55,7 @@ pub use politics::{
 };
 pub use save::{load_world, save_world, SaveError};
 pub use world::World;
-pub use worlds::{apply_layer_burst, apply_life_support_drain, apply_pop_deficits, compute_deficits, evacuate_body, life_support_bill, DeficitReport};
+pub use worlds::{apply_facility_soaks, apply_layer_burst, apply_life_support_drain, apply_pop_deficits, compute_deficits, evacuate_body, life_support_bill, DeficitReport};
 pub use sensors::{
     detect_strike, discover_wreck, in_sensor_range, poll_signal_envelope, receive_signal, sense_system,
     SENSOR_RANGE_STUB,

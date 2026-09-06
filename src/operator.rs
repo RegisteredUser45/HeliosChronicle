@@ -396,6 +396,38 @@ impl<'a> Operator<'a> {
     }
 
 
+
+    /// Apply empire facility soak boosts to a body.
+    pub fn apply_body_facility_soaks(
+        &mut self,
+        body_id: EntityId,
+        empire_id: EntityId,
+    ) -> Result<(), OperatorError> {
+        let empire = self
+            .world
+            .ledger()
+            .get_empire(empire_id)
+            .ok_or(OperatorError::NotFound(empire_id))?
+            .clone();
+        let body = self
+            .world
+            .ledger_mut()
+            .get_body_mut(body_id)
+            .ok_or(OperatorError::NotFound(body_id))?;
+        crate::worlds::apply_facility_soaks(body, &empire);
+        let tick = self.world.master_tick();
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: body_id,
+                field: "facility_soaks".into(),
+                old: String::new(),
+                new: format!("empire={empire_id}"),
+            },
+        );
+        Ok(())
+    }
+
     /// Evacuate a body (clear pops; optional ash automation).
     pub fn evacuate_colony(
         &mut self,
