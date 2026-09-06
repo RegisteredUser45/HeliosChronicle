@@ -41,7 +41,7 @@ Chronicle events: `EmpireSpawned`, `OrderCreated`, `OrderStatusChanged`, `Capita
 2. When the flag is on, `has_knowledge_path` checks real H/P objects:
    - Victim auto-knows own-home systems (`home_empire`) and KOs naming them as victim.
    - Witnesses must **carry** a KO with actor+system matching the order target.
-3. **KO grades** rumor (0.25) → confirmed (1.0): both open the path; emit also requires doctrine×weight ≥ threshold (`SaltWorld` 0.15, Punish/Prosecute 0.20).
+3. **KO grades** rumor (0.25) → confirmed (1.0): both open the path; emit also requires doctrine×weight ≥ threshold (`SaltWorld` 0.15, Punish/Prosecute 0.20). Punish/Prosecute multiplies willingness by P standing hostility toward the KO actor (≤−40 → ×1.5, ≤−15 → ×1.25).
 4. Empty knowledge or failed doctrine → **no order**. `salt_emit_enabled` stays **default false**.
 
 `SaltWorld` maps to a typed cruelty event (reserved; Conflict owns event typing later).

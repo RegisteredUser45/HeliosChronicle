@@ -147,15 +147,64 @@ pub fn has_knowledge_path(
 }
 
 /// Doctrine × evidence gate (after knowledge path). Deterministic — no RNG.
+/// How hostile `empire` already feels toward the worst implicated KO actor.
+/// More negative standing → higher multiplier (easier Punish/Prosecute).
+/// SaltWorld ignores standing (cruelty willingness is its own knob).
+pub fn punish_standing_multiplier(
+    world: &World,
+    empire_id: EntityId,
+    target: Option<EntityId>,
+) -> f64 {
+    let eid = EmpireId(empire_id.0);
+    let mut worst = 0_i32;
+    for (_id, ko) in world.knowledge.iter() {
+        let payload = &ko.payload;
+        let carries = ko
+            .carriers
+            .contains(&crate::knowledge::CarrierId::Empire(eid));
+        let victim_match = payload.who_victim == Some(eid);
+        let system_match = match (target, payload.system) {
+            (Some(t), Some(s)) => t == s,
+            (None, _) => true,
+            (Some(_), None) => false,
+        };
+        if !(carries || victim_match) || !system_match {
+            continue;
+        }
+        if let Some(actor) = payload.who_actor {
+            let s = world.standing.get(eid, actor);
+            if s < worst {
+                worst = s;
+            }
+        }
+    }
+    if worst <= -crate::politics::STANDING_SALT_VICTIM {
+        1.5
+    } else if worst <= -crate::politics::STANDING_CONFIRMED {
+        1.25
+    } else {
+        1.0
+    }
+}
+
 pub fn doctrine_allows_salt_family(
     empire: &EmpireEntity,
     intent: OrderIntent,
     evidence_weight: f64,
 ) -> bool {
+    doctrine_allows_salt_family_weighted(empire, intent, evidence_weight, 1.0)
+}
+
+pub fn doctrine_allows_salt_family_weighted(
+    empire: &EmpireEntity,
+    intent: OrderIntent,
+    evidence_weight: f64,
+    standing_mult: f64,
+) -> bool {
     let score = match intent {
         OrderIntent::SaltWorld => empire.salt_willingness * evidence_weight,
         OrderIntent::PunishSalter | OrderIntent::ProsecuteAtrocity => {
-            empire.punishment_willingness * evidence_weight
+            empire.punishment_willingness * standing_mult * evidence_weight
         }
         _ => return true,
     };
@@ -199,11 +248,17 @@ pub fn try_emit_order(
         else {
             return Ok(None);
         };
+        let standing_mult = match intent {
+            OrderIntent::PunishSalter | OrderIntent::ProsecuteAtrocity => {
+                punish_standing_multiplier(world, empire_id, target_ref)
+            }
+            _ => 1.0,
+        };
         let empire = world
             .ledger
             .get_empire(empire_id)
             .ok_or_else(|| format!("empire {empire_id} not found"))?;
-        if !doctrine_allows_salt_family(empire, intent, weight) {
+        if !doctrine_allows_salt_family_weighted(empire, intent, weight, standing_mult) {
             return Ok(None);
         }
     }
@@ -1145,6 +1200,67 @@ mod minds_tests {
         )
         .unwrap()
         .expect("confirmed punish passes");
+        assert_eq!(
+            w.ledger.get_order(id).unwrap().intent,
+            OrderIntent::PunishSalter
+        );
+    }
+
+
+    #[test]
+    fn standing_boosts_punish_doctrine() {
+        let mut w = World::new(90);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let actor = EmpireId(77);
+        // Low punishment so confirmed alone fails (0.15 * 1.0 < 0.20)
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.punishment_willingness = 0.15;
+        }
+        w.minds_flags.salt_emit_enabled = true;
+        let ko = crate::knowledge::emit_ko(
+            &mut w,
+            crate::knowledge::EmitKoParams {
+                kind: crate::knowledge::KoKind::Signal,
+                grade: crate::knowledge::KoGrade::Confirmed,
+                origin_event_seq: None,
+                payload: crate::knowledge::KoPayload {
+                    who_actor: Some(actor),
+                    who_victim: Some(EmpireId(empire.0)),
+                    system: Some(sys),
+                    severity: 8,
+                    target_type: "world".into(),
+                    claim: "salt".into(),
+                },
+                initial_carriers: Default::default(),
+                propagation: crate::knowledge::KoPropagation::Broadcast,
+            },
+        );
+        assert!(crate::knowledge::acquire_ko(&mut w, EmpireId(empire.0), ko));
+        let blocked = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::PunishSalter,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap();
+        assert!(blocked.is_none(), "low punish + no hostility should fail");
+        // Victim-level hostility toward actor
+        w.standing.table.insert(
+            (EmpireId(empire.0), actor),
+            -crate::politics::STANDING_SALT_VICTIM,
+        );
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::PunishSalter,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("hostile standing boosts punish over threshold");
         assert_eq!(
             w.ledger.get_order(id).unwrap().intent,
             OrderIntent::PunishSalter
