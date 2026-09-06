@@ -76,53 +76,95 @@ pub fn clamp_doctrine(v: f64) -> f64 {
 ///
 /// - Victim auto-knows cruelty on own worlds / as named victim on a KO payload.
 /// - Witnesses need to **carry** a KO whose payload implicates the act.
-/// - Rumor and confirmed both open the gate; confirmed weighs heavier for
-///   future willingness thresholds (weights below).
-/// - `salt_emit_enabled` remains default **false** — this only defines the path.
+/// - Rumor and confirmed both open the path; confirmed weighs heavier for
+///   doctrine thresholds (`evidence_weight_for_salt_family`).
+/// - `salt_emit_enabled` remains default **false** — path ≠ emit.
+pub const RUMOR_WEIGHT: f64 = 0.25;
+pub const CONFIRMED_WEIGHT: f64 = 1.0;
+/// `salt_willingness * evidence_weight` must meet this to emit SaltWorld.
+pub const SALT_DOCTRINE_THRESHOLD: f64 = 0.15;
+/// `punishment_willingness * evidence_weight` for Punish/Prosecute.
+pub const PUNISH_DOCTRINE_THRESHOLD: f64 = 0.20;
+
+/// Best evidence weight for a salt-family order, if any path exists.
+///
+/// Returns `None` when there is no knowledge path. Victim auto-know (own home
+/// or KO naming empire as victim) counts as confirmed weight.
+pub fn evidence_weight_for_salt_family(
+    world: &World,
+    empire_id: EntityId,
+    _intent: OrderIntent,
+    target: Option<EntityId>,
+) -> Option<f64> {
+    let eid = EmpireId(empire_id.0);
+    let mut best: Option<f64> = None;
+    let mut raise = |w: f64| {
+        best = Some(best.map(|b: f64| b.max(w)).unwrap_or(w));
+    };
+
+    if let Some(sys_id) = target {
+        if let Some(sys) = world.ledger.get(sys_id) {
+            if sys.home_empire == Some(eid) {
+                raise(CONFIRMED_WEIGHT);
+            }
+        }
+    }
+
+    for (_id, ko) in world.knowledge.iter() {
+        let payload = &ko.payload;
+        let victim_match = payload.who_victim == Some(eid);
+        let carries = ko
+            .carriers
+            .contains(&crate::knowledge::CarrierId::Empire(eid));
+        let system_match = match (target, payload.system) {
+            (Some(t), Some(s)) => t == s,
+            (None, _) => true,
+            (Some(_), None) => false,
+        };
+        let actor_present = payload.who_actor.is_some();
+        let grade_w = match ko.grade {
+            crate::knowledge::KoGrade::Rumor => RUMOR_WEIGHT,
+            crate::knowledge::KoGrade::Confirmed => CONFIRMED_WEIGHT,
+        };
+
+        if victim_match && (system_match || target.is_none()) {
+            raise(grade_w.max(CONFIRMED_WEIGHT)); // victim auto-know ≥ confirmed
+        }
+        if carries && actor_present && system_match {
+            raise(grade_w);
+        }
+    }
+    best
+}
+
 pub fn has_knowledge_path(
     world: &World,
     empire_id: EntityId,
     intent: OrderIntent,
     target: Option<EntityId>,
 ) -> bool {
-    const _RUMOR_WEIGHT: f64 = 0.25;
-    const _CONFIRMED_WEIGHT: f64 = 1.0;
-    let _ = (_RUMOR_WEIGHT, _CONFIRMED_WEIGHT, intent);
+    evidence_weight_for_salt_family(world, empire_id, intent, target).is_some()
+}
 
-    let eid = EmpireId(empire_id.0);
-
-    // Victim auto-know: own capital/home system targeted.
-    if let Some(sys_id) = target {
-        if let Some(sys) = world.ledger.get(sys_id) {
-            if sys.home_empire == Some(eid) {
-                return true;
-            }
+/// Doctrine × evidence gate (after knowledge path). Deterministic — no RNG.
+pub fn doctrine_allows_salt_family(
+    empire: &EmpireEntity,
+    intent: OrderIntent,
+    evidence_weight: f64,
+) -> bool {
+    let score = match intent {
+        OrderIntent::SaltWorld => empire.salt_willingness * evidence_weight,
+        OrderIntent::PunishSalter | OrderIntent::ProsecuteAtrocity => {
+            empire.punishment_willingness * evidence_weight
         }
-    }
-
-    // Victim auto-know / witness path: any KO naming this empire as victim,
-    // or carried by this empire with actor/victim/system matching the order.
-    for (_id, ko) in world.knowledge.iter() {
-        let payload = &ko.payload;
-        let victim_match = payload.who_victim == Some(eid);
-        let carries = ko.carriers.contains(&crate::knowledge::CarrierId::Empire(eid));
-        let system_match = match (target, payload.system) {
-            (Some(t), Some(s)) => t == s,
-            (None, _) => true, // no target → any relevant KO may qualify
-            (Some(_), None) => false,
-        };
-        let actor_present = payload.who_actor.is_some();
-
-        if victim_match && (system_match || target.is_none()) {
-            return true;
-        }
-        if carries && actor_present && system_match {
-            // Witness with a KO on a path (rumor or confirmed both emit-eligible;
-            // confirmed is heavier when willingness thresholds are applied later).
-            return true;
-        }
-    }
-    false
+        _ => return true,
+    };
+    let threshold = match intent {
+        OrderIntent::SaltWorld => SALT_DOCTRINE_THRESHOLD,
+        OrderIntent::PunishSalter | OrderIntent::ProsecuteAtrocity => PUNISH_DOCTRINE_THRESHOLD,
+        _ => 0.0,
+    };
+    score + f64::EPSILON >= threshold
 }
 
 /// Whether this intent is salt/punish/atrocity and must pass emit gates.
@@ -152,7 +194,16 @@ pub fn try_emit_order(
         if !world.minds_flags.salt_emit_enabled {
             return Ok(None);
         }
-        if !has_knowledge_path(world, empire_id, intent, target_ref) {
+        let Some(weight) =
+            evidence_weight_for_salt_family(world, empire_id, intent, target_ref)
+        else {
+            return Ok(None);
+        };
+        let empire = world
+            .ledger
+            .get_empire(empire_id)
+            .ok_or_else(|| format!("empire {empire_id} not found"))?;
+        if !doctrine_allows_salt_family(empire, intent, weight) {
             return Ok(None);
         }
     }
@@ -985,8 +1036,9 @@ mod minds_tests {
             OrderIntent::PunishSalter,
             Some(sys),
         ));
-        // Enabling salt_emit allows emit once path exists
+        // Enabling salt_emit + confirm grade so doctrine threshold passes
         w.minds_flags.salt_emit_enabled = true;
+        crate::knowledge::confirm_ko(&mut w, ko);
         let id = try_emit_order(
             &mut w,
             empire,
@@ -995,7 +1047,104 @@ mod minds_tests {
             OrderSource::Ai,
         )
         .unwrap()
-        .expect("path + flag → order");
+        .expect("path + flag + confirmed → order");
+        assert_eq!(
+            w.ledger.get_order(id).unwrap().intent,
+            OrderIntent::PunishSalter
+        );
+    }
+
+
+    #[test]
+    fn doctrine_blocks_salt_on_rumor_for_default_empire() {
+        let mut w = World::new(80);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        w.minds_flags.salt_emit_enabled = true;
+        let ko = crate::knowledge::emit_ko(
+            &mut w,
+            crate::knowledge::EmitKoParams {
+                kind: crate::knowledge::KoKind::Signal,
+                grade: crate::knowledge::KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: crate::knowledge::KoPayload {
+                    who_actor: Some(EmpireId(99)),
+                    who_victim: Some(EmpireId(88)),
+                    system: Some(sys),
+                    severity: 5,
+                    target_type: "world".into(),
+                    claim: "salt".into(),
+                },
+                initial_carriers: Default::default(),
+                propagation: crate::knowledge::KoPropagation::Broadcast,
+            },
+        );
+        assert!(crate::knowledge::acquire_ko(&mut w, EmpireId(empire.0), ko));
+        let wgt = evidence_weight_for_salt_family(
+            &w,
+            empire,
+            OrderIntent::SaltWorld,
+            Some(sys),
+        )
+        .expect("path");
+        assert!((wgt - RUMOR_WEIGHT).abs() < 1e-9);
+        // default salt_willingness 0.15 * 0.25 < 0.15 threshold
+        let r = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::SaltWorld,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap();
+        assert!(r.is_none(), "rumor must fail default salt doctrine");
+    }
+
+    #[test]
+    fn doctrine_allows_punish_on_rumor_for_default_empire() {
+        let mut w = World::new(81);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        w.minds_flags.salt_emit_enabled = true;
+        let ko = crate::knowledge::emit_ko(
+            &mut w,
+            crate::knowledge::EmitKoParams {
+                kind: crate::knowledge::KoKind::Signal,
+                grade: crate::knowledge::KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: crate::knowledge::KoPayload {
+                    who_actor: Some(EmpireId(99)),
+                    who_victim: Some(EmpireId(88)),
+                    system: Some(sys),
+                    severity: 5,
+                    target_type: "world".into(),
+                    claim: "salt".into(),
+                },
+                initial_carriers: Default::default(),
+                propagation: crate::knowledge::KoPropagation::Broadcast,
+            },
+        );
+        assert!(crate::knowledge::acquire_ko(&mut w, EmpireId(empire.0), ko));
+        // default punishment 0.55 * 0.25 = 0.1375 < 0.20 → should block on rumor
+        let r = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::PunishSalter,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap();
+        assert!(r.is_none(), "rumor punish should fail default threshold");
+        crate::knowledge::confirm_ko(&mut w, ko);
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::PunishSalter,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("confirmed punish passes");
         assert_eq!(
             w.ledger.get_order(id).unwrap().intent,
             OrderIntent::PunishSalter

@@ -41,8 +41,8 @@ Chronicle events: `EmpireSpawned`, `OrderCreated`, `OrderStatusChanged`, `Capita
 2. When the flag is on, `has_knowledge_path` checks real H/P objects:
    - Victim auto-knows own-home systems (`home_empire`) and KOs naming them as victim.
    - Witnesses must **carry** a KO with actor+system matching the order target.
-3. **KO grades** rumor → confirmed: both open the emit gate; confirmed is heavier for future willingness thresholds (weight placeholders retained).
-4. Empty knowledge → **no order**. `salt_emit_enabled` stays **default false**.
+3. **KO grades** rumor (0.25) → confirmed (1.0): both open the path; emit also requires doctrine×weight ≥ threshold (`SaltWorld` 0.15, Punish/Prosecute 0.20).
+4. Empty knowledge or failed doctrine → **no order**. `salt_emit_enabled` stays **default false**.
 
 `SaltWorld` maps to a typed cruelty event (reserved; Conflict owns event typing later).
 
@@ -100,4 +100,4 @@ Re-score runs **before further AI orders** in that tick once scoring is wired.
 
 **Done:** docs, doctrine defaults on Globals + EmpireEntity, Order entities on ledger, events, operator doctrine/order hooks, home-flag → CapitalRescore same tick, feature-flagged emit helpers, **scoring against B `MapState`**, **feed score from C `binding_remainder`** (matter drain updates score), same-tick capital rescore cancel+suggest, minds tick ≤1 Ai order/empire, tests.
 
-**Stubbed / gated:** `salt_emit_enabled` default off (Lead: don’t spam salt until cleared), willingness×grade thresholds not yet applied, SaltWorld → typed cruelty event body (Conflict later). `has_knowledge_path` now uses real KO/victim auto-know.
+**Stubbed / gated:** `salt_emit_enabled` default off (Lead: don’t spam salt until cleared), SaltWorld → typed cruelty event body (Conflict later). Knowledge path + willingness×grade thresholds are wired.
