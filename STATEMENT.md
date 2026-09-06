@@ -57,7 +57,7 @@ Spot price and AI disinterest do not unbind a stock. They only change who bother
 
 Depleted. When binding_remainder drops below a global editable threshold, the system sets depleted and arms the extinction clock. All extraction counts: state mines, civilian lines, foreign strip-mines, abandoned automation still running.
 
-Clock behavior. Stable until depleted. Then stages write environment layers and eventually remove or sterilize the system. Remnants may leave a last harvest. Unmined wilderness does not die; say that plainly.
+Clock behavior. Stable until depleted. Then a fuse timer; when it expires the system explodes / ends (may write layers at the end). Remnants may leave a last harvest. Unmined wilderness does not die; say that plainly.
 
 Survey split.
 
@@ -65,7 +65,7 @@ Always: deposits, accessibility, remaining feed.
 
 After depletion: exact fuse length, earned by survey.
 
-Appearance may show “this light is sick” once stages have begun. Sick ≠ known number.
+No sick / dying appearance stages. After depletion only a game-served fuse timer, then explode / end. Exact ticks remain a survey product.
 
 Homes. Home is a flag held by a living empire. Depletion still happens. Default: clock armed and paused while the flag is held. Pause ends on destruction or abandonment. Re-flag by conqueror or successor is allowed so capitals stay prizes. Glassing layers does not, by itself, kill the star.
 
@@ -169,11 +169,9 @@ Binding floor and dry threshold.
 
 Home pause on/off.
 
-Countdown length and stage schedule.
+Countdown length (fuse timer to explode / end).
 
 Live-system band and spawn recipe table.
-
-Whether appearance reveals “sick” before survey.
 
 Doctrine defaults for salt and punishment.
 
