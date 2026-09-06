@@ -270,6 +270,18 @@ pub fn execute_evacuate_intent(
     n
 }
 
+/// Apply ExpandSurvey intent via H `sensors::sense_system` (fog last-known).
+///
+/// Parallel to Ai Evacuate → D `evacuate_body`. Marks/refreshes the target
+/// system in the empire's fog so frontier survey can open knowledge.
+pub fn execute_expand_survey_intent(
+    world: &mut World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) {
+    crate::sensors::sense_system(world, EmpireId(empire_id.0), system_id);
+}
+
 /// Try to create an order on the ledger.
 ///
 /// Salt-family intents return `Ok(None)` when `salt_emit_enabled` is false, or
@@ -326,6 +338,12 @@ pub fn try_emit_order(
     if matches!(intent, OrderIntent::Evacuate) && matches!(source, OrderSource::Ai) {
         if let Some(sys) = target_ref {
             let _ = execute_evacuate_intent(world, empire_id, sys);
+        }
+    }
+    // Ai ExpandSurvey → H sense_system (fog last-known / frontier survey).
+    if matches!(intent, OrderIntent::ExpandSurvey) && matches!(source, OrderSource::Ai) {
+        if let Some(sys) = target_ref {
+            execute_expand_survey_intent(world, empire_id, sys);
         }
     }
     Ok(Some(id))
@@ -671,8 +689,11 @@ pub fn minds_tick_stub(world: &mut World) {
             let Some(score) = score_system(world, empire_id, sid) else {
                 continue;
             };
+            // Known systems: current behavior. Unknown: only ExpandSurvey frontier.
             if !score.known {
-                continue;
+                if !matches!(score.suggested, Some(OrderIntent::ExpandSurvey)) {
+                    continue;
+                }
             }
             if empire_has_ai_order_targeting(world, empire_id, sid) {
                 continue;
@@ -1514,6 +1535,108 @@ mod minds_tests {
         let certain = score_system(&w, empire, sys).unwrap();
         assert!((certain.feed_score - 800.0).abs() < 1e-6);
         assert!(certain.feed_score > mid.feed_score);
+    }
+
+    #[test]
+    fn ai_expand_survey_senses_system() {
+        let mut w = World::new(130);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        // Contact registry present but no fog → system unknown until sense.
+        w.contact.ensure(EmpireId(empire.0));
+        assert!(
+            !w.contact
+                .get(EmpireId(empire.0))
+                .unwrap()
+                .fog
+                .known_systems
+                .contains_key(&sys)
+        );
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::ExpandSurvey,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("expand survey order");
+        assert_eq!(
+            w.ledger.get_order(id).unwrap().intent,
+            OrderIntent::ExpandSurvey
+        );
+        assert!(
+            w.contact
+                .get(EmpireId(empire.0))
+                .unwrap()
+                .fog
+                .known_systems
+                .contains_key(&sys),
+            "Ai ExpandSurvey must call sense_system and add fog"
+        );
+    }
+
+    #[test]
+    fn minds_tick_can_expand_survey_unknown() {
+        let mut w = World::new(131);
+        w.minds_flags.scoring_enabled = true;
+        w.set_lod(crate::lod::LodMode::Fine);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        // Contact registry so bootstrap does not auto-know; frontier stays unknown.
+        w.contact.ensure(EmpireId(empire.0));
+        // Deterministic wilderness frontier → suggested ExpandSurvey when !known.
+        let frontier = w.ledger.spawn_wilderness_system();
+        {
+            let s = w.ledger.get_mut(frontier).unwrap();
+            s.binding_remainder = 100.0;
+            assert!(s.is_wilderness_immortal());
+        }
+        assert_eq!(
+            sky::map_state(w.ledger.get(frontier).unwrap()),
+            MapState::WildernessUnknown
+        );
+        let pre = score_system(&w, empire, frontier).expect("score");
+        assert!(!pre.known);
+        assert_eq!(pre.suggested, Some(OrderIntent::ExpandSurvey));
+
+        // Quiet known homes so frontier ExpandSurvey can win the ≤1 Ai slot.
+        let systems: Vec<_> = w.ledger.systems().map(|(id, _)| *id).collect();
+        for sid in &systems {
+            if *sid == frontier {
+                continue;
+            }
+            let s = w.ledger.get_mut(*sid).unwrap();
+            s.lod_hint = crate::lod::LodHint::Quiet;
+            s.depleted = false;
+            s.fuse_end_tick = None;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.binding_remainder = 10.0; // low score vs frontier
+            s.home_empire = Some(EmpireId(empire.0));
+        }
+
+        let before_orders = w.ledger.orders_len();
+        minds_tick_stub(&mut w);
+        let has_expand = w.ledger.orders().any(|(_, o)| {
+            o.empire_id == empire
+                && o.intent == OrderIntent::ExpandSurvey
+                && o.target_ref == Some(frontier)
+                && matches!(o.source, OrderSource::Ai)
+        });
+        let fogged = w
+            .contact
+            .get(EmpireId(empire.0))
+            .map(|c| c.fog.known_systems.contains_key(&frontier))
+            .unwrap_or(false);
+        assert!(
+            has_expand || fogged,
+            "minds tick must ExpandSurvey unknown frontier (order and/or fog); orders_before={before_orders} after={}",
+            w.ledger.orders_len()
+        );
+        // salt_emit remains default false
+        assert!(!w.minds_flags.salt_emit_enabled);
     }
 
     fn wilderness_unknown_not_infinite() {
