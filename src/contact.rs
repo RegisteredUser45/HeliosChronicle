@@ -463,6 +463,19 @@ pub fn sense_fleet(
     world.recompute_outcome_hash();
 }
 
+
+/// True if a and b share an active treaty containing `clause`.
+pub fn has_clause(world: &World, a: EmpireId, b: EmpireId, clause: TreatyClause) -> bool {
+    let Some(ca) = world.contact.get(a) else {
+        return false;
+    };
+    ca.treaties.iter().any(|t| {
+        ((t.a == a && t.b == b) || (t.a == b && t.b == a))
+            && t.end_tick.is_none()
+            && t.clauses.iter().any(|cl| *cl == clause)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,6 +578,18 @@ mod tests {
         assert_eq!(e.last_known_tick, w.master_tick());
         assert_eq!(e.last_system, Some(sys));
         assert!(e.uncertainty < 1.0);
+    }
+
+
+    #[test]
+    fn has_clause_non_aggression() {
+        let mut w = World::new(60);
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        assert!(!has_clause(&w, a, b, TreatyClause::NonAggression));
+        sign_treaty(&mut w, a, b, vec![TreatyClause::NonAggression]);
+        assert!(has_clause(&w, a, b, TreatyClause::NonAggression));
+        assert!(has_clause(&w, b, a, TreatyClause::NonAggression));
     }
 
 }

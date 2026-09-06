@@ -26,7 +26,7 @@ pub mod research;
 pub mod hulls;
 
 pub use contact::{
-    break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, push_fine_hot,
+    break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, has_clause, push_fine_hot,
     sense_fleet, sign_contract, sign_treaty, upgrade_fog, Contract, ContractKind, EmpireContact,
     EmpireContactStore, FleetFogEntry, FogState, SystemFogEntry, Treaty, TreatyClause,
 };

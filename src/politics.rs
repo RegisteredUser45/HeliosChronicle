@@ -14,6 +14,9 @@ pub const STANDING_CONFIRMED: i32 = 15;
 pub const STANDING_SALT_VICTIM: i32 = 40;
 pub const STANDING_FIRST_CONTACT: i32 = 2;
 pub const STANDING_VIOLENCE_VICTIM: i32 = 25;
+/// Standing delta multiplier numerator when NonAggression treaty holds (half impact).
+pub const NON_AGGRESSION_SOFTEN_NUM: i32 = 1;
+pub const NON_AGGRESSION_SOFTEN_DEN: i32 = 2;
 
 /// Directed standing table: key `(a, b)` is how **a** feels about **b** (a → b).
 ///
@@ -75,6 +78,15 @@ fn bump_standing(world: &mut World, a: EmpireId, b: EmpireId, delta: i32, reason
     set_standing(world, a, b, old.saturating_add(delta), reason_seq);
 }
 
+
+fn violence_standing_delta(world: &World, actor: EmpireId, victim: EmpireId, base: i32) -> i32 {
+    if crate::contact::has_clause(world, actor, victim, crate::contact::TreatyClause::NonAggression) {
+        (base * NON_AGGRESSION_SOFTEN_NUM) / NON_AGGRESSION_SOFTEN_DEN
+    } else {
+        base
+    }
+}
+
 fn is_violence(kind: &EventKind) -> Option<(EmpireId, EmpireId)> {
     match kind {
         EventKind::OrbitalStrike { actor, victim, .. }
@@ -112,14 +124,16 @@ pub fn apply_event_for_standing(world: &mut World, event: &ChronicleEvent) {
         }
         EventKind::Salt { actor, victim, .. } => {
             // Victim auto-react (Lead Q1) — hostility toward actor.
-            bump_standing(world, *victim, *actor, -STANDING_SALT_VICTIM, seq);
+            let d = violence_standing_delta(world, *actor, *victim, STANDING_SALT_VICTIM);
+            bump_standing(world, *victim, *actor, -d, seq);
         }
         EventKind::OrbitalStrike { .. }
         | EventKind::BombardmentLayerWrite { .. }
         | EventKind::SurfaceCombat { .. }
         | EventKind::GlassAttempt { .. } => {
             if let Some((actor, victim)) = is_violence(&event.kind) {
-                bump_standing(world, victim, actor, -STANDING_VIOLENCE_VICTIM, seq);
+                let d = violence_standing_delta(world, actor, victim, STANDING_VIOLENCE_VICTIM);
+                bump_standing(world, victim, actor, -d, seq);
             }
         }
         EventKind::KoAcquired { ko, empire } => {
@@ -212,4 +226,45 @@ pub fn emit_salt(
         return;
     }
     crate::violence::salt_system_only(world, actor, victim, system);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contact::{sign_treaty, TreatyClause};
+    use crate::entity::{EmpireId, EntityId, EnvLayers};
+    use crate::violence::{strike_layers, StrikeKind};
+    use crate::world::World;
+
+    #[test]
+    fn non_aggression_softens_violence_standing() {
+        let mut w = World::new(70);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let body = w.ledger.spawn_body(system);
+        let actor = EmpireId(1);
+        let victim = EmpireId(2);
+        sign_treaty(&mut w, actor, victim, vec![TreatyClause::NonAggression]);
+        strike_layers(
+            &mut w,
+            actor,
+            victim,
+            system,
+            body,
+            StrikeKind::OrbitalStrike,
+            EnvLayers {
+                atmosphere_pressure: 0.0,
+                temperature: 0.0,
+                radiation: 1.0,
+                toxins_fallout: 0.0,
+                biosphere: 0.0,
+            },
+        )
+        .unwrap();
+        let st = w.standing.get(victim, actor);
+        // TreatySigned also bumps +STANDING_FIRST_CONTACT each way before the strike.
+        assert_eq!(
+            st,
+            STANDING_FIRST_CONTACT - STANDING_VIOLENCE_VICTIM / 2
+        );
+    }
 }
