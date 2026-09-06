@@ -289,6 +289,12 @@ pub fn tool_yard_at_system(
 /// True if ship has `module.weapon_kinetic` on its design and magazine ammo remaining.
 
 /// True if design lists the catalog module id.
+
+/// True if design has `module.sensor_basic` and ship is not wrecked.
+pub fn can_sense(design: &ShipDesign, ship: &ShipInstance) -> bool {
+    design_has_module(design, "module.sensor_basic") && ship.damage < 1.0
+}
+
 pub fn design_has_module(design: &ShipDesign, module_id: &str) -> bool {
     design.modules.iter().any(|m| m == module_id)
 }
@@ -663,5 +669,22 @@ mod tests {
         .unwrap();
         assert!(design_has_module(&d, "module.sensor_basic"));
         assert!(!design_has_module(&d, "module.weapon_kinetic"));
+    }
+
+    #[test]
+    fn can_sense_requires_sensor_module() {
+        let d = make_design(
+            EntityId(60),
+            "scout",
+            vec!["module.engine_chem".into(), "module.sensor_basic".into()],
+        )
+        .unwrap();
+        let mut s = spawn_instance(EntityId(61), &d, 1.0);
+        assert!(can_sense(&d, &s));
+        apply_ship_damage(&mut s, 1.0);
+        assert!(!can_sense(&d, &s));
+        let d2 = make_design(EntityId(62), "blind", vec!["module.engine_chem".into()]).unwrap();
+        let s2 = spawn_instance(EntityId(63), &d2, 1.0);
+        assert!(!can_sense(&d2, &s2));
     }
 }
