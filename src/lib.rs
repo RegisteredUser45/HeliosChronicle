@@ -3,7 +3,7 @@
 //! Tick loop, deterministic seed, event log, save/load, entity ledger,
 //! operator R/W, stub LOD, knowledge objects, contact fog, standing,
 //! Phase I doctrine/orders, Phase B sky, Phase D worlds, Phase E/F schema stubs,
-//! Phase H planetary layer-write path (hull damage waits on F).
+//! Phase H planetary layer-write path + F ShipInstance hull damage.
 
 pub mod contact;
 pub mod cosmology;
@@ -54,7 +54,7 @@ pub use save::{load_world, save_world, SaveError};
 pub use world::World;
 pub use worlds::{apply_layer_burst, compute_deficits, DeficitReport};
 pub use violence::{
-    apply_hull_damage_stub, salt_layer_delta, salt_world, strike_layers, StrikeKind,
+    apply_hull_damage, salt_layer_delta, salt_world, strike_layers, StrikeKind,
     ViolenceError, ViolenceOutcome, KO_SEVERITY_THRESHOLD, SALT_BIOSPHERE_DELTA,
     SALT_RADIATION_DELTA, SALT_SEVERITY, SALT_TEMPERATURE_DELTA, SALT_TOXINS_DELTA,
 };

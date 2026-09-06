@@ -1,7 +1,7 @@
-//! Phase H — Violence: planetary layer writes, Salt, KO emission.
+//! Phase H — Violence: planetary layer writes, Salt, KO emission, hull damage.
 //!
 //! Writes the same five EnvLayers columns as D (`apply_layer_burst`).
-//! Hull damage waits on Phase F — see [`apply_hull_damage_stub`].
+//! Ship instance damage uses F [`ShipInstance::damage`] via [`apply_hull_damage`].
 
 use std::collections::BTreeSet;
 
@@ -90,6 +90,9 @@ pub enum ViolenceError {
         body_id: EntityId,
         expected_system: EntityId,
         actual_system: EntityId,
+    },
+    ShipNotFound {
+        ship_id: EntityId,
     },
 }
 
@@ -242,8 +245,7 @@ pub fn strike_layers(
         true,
     );
 
-    // Hull damage waits on F — call site present, no-op.
-    let _ = apply_hull_damage_stub(world, body_id, 0.0);
+    // Hull damage is ship-targeted — use [`apply_hull_damage`] separately.
 
     world.recompute_outcome_hash();
     Ok(ViolenceOutcome {
@@ -307,7 +309,7 @@ pub fn salt_world(
         true,
     );
 
-    let _ = apply_hull_damage_stub(world, body_id, 0.0);
+    // Hull damage is ship-targeted — use [`apply_hull_damage`] separately.
 
     world.recompute_outcome_hash();
     Ok(ViolenceOutcome {
@@ -318,16 +320,33 @@ pub fn salt_world(
     })
 }
 
-/// Hull damage waits on Phase F fields — explicit no-op.
+/// Apply damage to an F [`crate::hulls::ShipInstance`] on `world.ships`.
 ///
-/// Call sites may invoke this after layer writes; it must not invent hull
-/// fields or panic. Returns `Ok(())` always until F lands real damage.
+/// `amount` is added to `ShipInstance.damage` and clamped to `[0.0, 1.0]`
+/// (`can_move` treats `damage >= 1.0` as immobilized). Returns the new damage.
+/// Layer strikes do not auto-call this — pass an explicit ship id.
+pub fn apply_hull_damage(
+    world: &mut World,
+    ship_id: EntityId,
+    amount: f64,
+) -> Result<f64, ViolenceError> {
+    let ship = world
+        .ships
+        .get_mut(&ship_id)
+        .ok_or(ViolenceError::ShipNotFound { ship_id })?;
+    let new = crate::hulls::apply_ship_damage(ship, amount);
+    world.recompute_outcome_hash();
+    Ok(new)
+}
+
+/// Backward-compatible alias — prefer [`apply_hull_damage`].
+#[deprecated(note = "use apply_hull_damage")]
 pub fn apply_hull_damage_stub(
-    _world: &mut World,
-    _target: EntityId,
-    _amount: f64,
+    world: &mut World,
+    ship_id: EntityId,
+    amount: f64,
 ) -> Result<(), ViolenceError> {
-    Ok(())
+    apply_hull_damage(world, ship_id, amount).map(|_| ())
 }
 
 /// System-only Salt path used when no body is available (backward-compatible).
@@ -480,16 +499,38 @@ mod tests {
     }
 
     #[test]
-    fn hull_damage_stub_is_noop() {
+    fn hull_damage_applies_to_ship_instance() {
+        use crate::hulls::{can_move, make_design, spawn_instance};
+
         let mut w = World::new(202);
-        let system = *w.ledger().systems().next().unwrap().0;
-        let body_id = w.ledger.spawn_body(system);
-        let before = w.clone();
-        assert!(apply_hull_damage_stub(&mut w, body_id, 999.0).is_ok());
-        // No new hull fields invented; body layers unchanged; no panic.
+        let design = make_design(
+            EntityId(900),
+            "gunboat",
+            vec![
+                "module.engine_chem".into(),
+                "module.crew_habitat".into(),
+            ],
+        )
+        .unwrap();
+        let ship_id = EntityId(901);
+        let inst = spawn_instance(ship_id, &design, 5.0);
+        assert!(can_move(&design, &inst));
+        w.ship_designs.insert(design.id, design.clone());
+        w.ships.insert(ship_id, inst);
+
+        let new = apply_hull_damage(&mut w, ship_id, 0.4).unwrap();
+        assert!((new - 0.4).abs() < f64::EPSILON);
+        assert!((w.ships.get(&ship_id).unwrap().damage - 0.4).abs() < f64::EPSILON);
+        assert!(can_move(&design, w.ships.get(&ship_id).unwrap()));
+
+        let new = apply_hull_damage(&mut w, ship_id, 0.7).unwrap();
+        assert!((new - 1.0).abs() < f64::EPSILON); // clamped
+        assert!(!can_move(&design, w.ships.get(&ship_id).unwrap()));
+
+        let missing = EntityId(9999);
         assert_eq!(
-            w.ledger.get_body(body_id).unwrap().layers,
-            before.ledger.get_body(body_id).unwrap().layers
+            apply_hull_damage(&mut w, missing, 0.1).unwrap_err(),
+            ViolenceError::ShipNotFound { ship_id: missing }
         );
     }
 
