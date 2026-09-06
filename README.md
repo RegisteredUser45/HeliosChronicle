@@ -41,7 +41,7 @@ Design notes: [docs/phase-i-minds.md](docs/phase-i-minds.md).
 
 ## Phase G/H/P
 
-Contact (G) and Politics (P) stubs: knowledge objects, fog/first_contact, directed standing. Notes: [docs/GHP-design-notes.md](docs/GHP-design-notes.md). **H** layer-write path live (`violence::strike_layers` / `salt_world`); hull damage via ShipInstance.damage (F).
+Contact (G) and Politics (P) stubs: knowledge objects, fog/first_contact, directed standing. Notes: [docs/GHP-design-notes.md](docs/GHP-design-notes.md). **H** layer-write path live (`violence::strike_layers` / `salt_world`); hull damage via ShipInstance.damage (F); sensor stubs (`sense_system` / `detect_strike` / `receive_signal` / `discover_wreck`).
 
 ### Build
 

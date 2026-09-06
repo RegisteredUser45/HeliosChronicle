@@ -335,11 +335,54 @@ pub fn apply_hull_damage(
         .get_mut(&ship_id)
         .ok_or(ViolenceError::ShipNotFound { ship_id })?;
     let new = crate::hulls::apply_ship_damage(ship, amount);
+    // Immobilized / wrecked: emit a wreck KO (Lock 9 knowledge object).
+    if new >= 1.0 {
+        let _ = crate::knowledge::emit_ko(
+            world,
+            crate::knowledge::EmitKoParams {
+                kind: crate::knowledge::KoKind::Wreck,
+                grade: crate::knowledge::KoGrade::Confirmed,
+                origin_event_seq: None,
+                payload: crate::knowledge::KoPayload {
+                    who_actor: None,
+                    who_victim: None,
+                    system: None,
+                    severity: 5,
+                    target_type: "wrecked_ship".into(),
+                    claim: format!("ship {ship_id} wrecked"),
+                },
+                initial_carriers: Default::default(),
+                propagation: crate::knowledge::KoPropagation::DerelictScan,
+            },
+        );
+    }
     world.recompute_outcome_hash();
     Ok(new)
 }
 
 /// Backward-compatible alias — prefer [`apply_hull_damage`].
+
+/// Layer strike plus optional ship hull damage (F).
+pub fn strike_with_ship(
+    world: &mut World,
+    actor: EmpireId,
+    victim: EmpireId,
+    system: EntityId,
+    body_id: EntityId,
+    kind: StrikeKind,
+    delta: EnvLayers,
+    ship_id: Option<EntityId>,
+    ship_damage: f64,
+) -> Result<(ViolenceOutcome, Option<f64>), ViolenceError> {
+    let out = strike_layers(world, actor, victim, system, body_id, kind, delta)?;
+    let dmg = if let Some(sid) = ship_id {
+        Some(apply_hull_damage(world, sid, ship_damage)?)
+    } else {
+        None
+    };
+    Ok((out, dmg))
+}
+
 #[deprecated(note = "use apply_hull_damage")]
 pub fn apply_hull_damage_stub(
     world: &mut World,
@@ -535,6 +578,31 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn hull_damage_emits_wreck_ko_when_immobilized() {
+        use crate::hulls::{make_design, spawn_instance};
+        use crate::knowledge::KoKind;
+
+        let mut w = World::new(204);
+        let design = make_design(
+            EntityId(910),
+            "target",
+            vec!["module.engine_chem".into(), "module.crew_habitat".into()],
+        )
+        .unwrap();
+        let ship_id = EntityId(911);
+        w.ship_designs.insert(design.id, design.clone());
+        w.ships.insert(ship_id, spawn_instance(ship_id, &design, 5.0));
+        let before = w.knowledge.len();
+        let dmg = apply_hull_damage(&mut w, ship_id, 1.0).unwrap();
+        assert!((dmg - 1.0).abs() < f64::EPSILON);
+        assert!(w.knowledge.len() > before);
+        assert!(w
+            .knowledge
+            .iter()
+            .any(|(_, ko)| ko.kind == KoKind::Wreck));
+    }
+
     fn body_system_mismatch_errors() {
         let mut w = World::new(203);
         let systems: Vec<_> = w.ledger().systems().map(|(id, _)| *id).collect();
