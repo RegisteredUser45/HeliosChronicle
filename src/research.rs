@@ -263,6 +263,8 @@ pub fn unlock_segment(empire: &mut EmpireEntity, segment: &TechSegment) -> Resul
     for u in &segment.unlocks {
         empire.unlocked_catalog_ids.insert(u.clone());
     }
+    // Full research (or re-research) clears salvage incomplete-stats flag.
+    empire.incomplete_stat_segments.remove(&segment.id);
     Ok(())
 }
 
@@ -284,6 +286,32 @@ pub fn salvage_unlock_segment(
     Ok(())
 }
 
+
+
+/// Pay full RP cost again to clear `incomplete_stat_segments` (no RNG). Segment must already be unlocked.
+pub fn repair_salvage_segment(
+    empire: &mut EmpireEntity,
+    segment_id: &str,
+    globals: &Globals,
+    capacity: f64,
+    progress_rp: &mut f64,
+    dt: u64,
+) -> Result<bool, String> {
+    if !empire.unlocked_segments.contains(segment_id) {
+        return Err("segment not unlocked".into());
+    }
+    if !empire.incomplete_stat_segments.contains(segment_id) {
+        return Ok(true);
+    }
+    let cost = segment_rp_cost(globals);
+    *progress_rp += capacity.max(0.0) * dt as f64;
+    if *progress_rp + f64::EPSILON >= cost {
+        empire.incomplete_stat_segments.remove(segment_id);
+        *progress_rp = 0.0;
+        return Ok(true);
+    }
+    Ok(false)
+}
 
 pub fn find_segment(segment_id: &str) -> Option<TechSegment> {
     stub_tech_book().1.into_iter().find(|s| s.id == segment_id)
@@ -557,5 +585,31 @@ mod tests {
         add_deposit(&mut w, system, Deposit::new("stock.silicates", 8.0, 1.0, ExtractorKind::State)).unwrap();
         w.tick(1000);
         assert!(w.ledger.get_empire(empire).unwrap().unlocked_segments.contains("seg.yard"));
+    }
+
+    #[test]
+    fn salvage_then_repair_clears_incomplete() {
+        let g = Globals::default();
+        let mut empire = EmpireEntity::from_defaults(EntityId(1), &g, None);
+        let seg = find_segment("seg.chem_drive").unwrap();
+        salvage_unlock_segment(&mut empire, &seg).unwrap();
+        assert!(empire.incomplete_stat_segments.contains("seg.chem_drive"));
+        let mut progress = 0.0;
+        let mut done = false;
+        while !done {
+            done = repair_salvage_segment(&mut empire, "seg.chem_drive", &g, 1.0, &mut progress, 100).unwrap();
+        }
+        assert!(!empire.incomplete_stat_segments.contains("seg.chem_drive"));
+    }
+
+    #[test]
+    fn unlock_segment_clears_incomplete_flag() {
+        let g = Globals::default();
+        let mut empire = EmpireEntity::from_defaults(EntityId(1), &g, None);
+        let seg = find_segment("seg.chem_drive").unwrap();
+        salvage_unlock_segment(&mut empire, &seg).unwrap();
+        assert!(empire.incomplete_stat_segments.contains("seg.chem_drive"));
+        unlock_segment(&mut empire, &seg).unwrap();
+        assert!(!empire.incomplete_stat_segments.contains("seg.chem_drive"));
     }
 }

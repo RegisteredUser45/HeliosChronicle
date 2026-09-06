@@ -276,6 +276,60 @@ impl<'a> Operator<'a> {
         Ok(())
     }
 
+
+    /// Repair a salvage-incomplete segment via lab RP (clears incomplete_stat_segments).
+    pub fn repair_salvage_research(
+        &mut self,
+        lab_id: EntityId,
+        segment_id: &str,
+        dt: u64,
+    ) -> Result<bool, OperatorError> {
+        let globals = self.world.globals.clone();
+        let empire_id = self
+            .world
+            .labs
+            .get(&lab_id)
+            .map(|l| l.empire_id)
+            .ok_or(OperatorError::NotFound(lab_id))?;
+        let capacity = self
+            .world
+            .labs
+            .get(&lab_id)
+            .map(|l| l.capacity)
+            .ok_or(OperatorError::NotFound(lab_id))?;
+        let mut progress = self.world.labs.get(&lab_id).unwrap().progress_rp;
+        let done = {
+            let empire = self
+                .world
+                .ledger_mut()
+                .get_empire_mut(empire_id)
+                .ok_or(OperatorError::NotFound(empire_id))?;
+            crate::research::repair_salvage_segment(
+                empire, segment_id, &globals, capacity, &mut progress, dt,
+            )
+            .map_err(OperatorError::Other)?
+        };
+        if let Some(lab) = self.world.labs.get_mut(&lab_id) {
+            lab.progress_rp = progress;
+            if done {
+                lab.assigned_segment = None;
+            }
+        }
+        if done {
+            let tick = self.world.master_tick();
+            self.world.log_mut().append(
+                tick,
+                EventKind::OperatorMutation {
+                    entity: lab_id,
+                    field: "salvage_repaired".into(),
+                    old: String::new(),
+                    new: segment_id.into(),
+                },
+            );
+        }
+        Ok(done)
+    }
+
     /// Salvage-jump unlock a segment (incomplete stats flag; no RNG).
     pub fn salvage_research_segment(
         &mut self,
