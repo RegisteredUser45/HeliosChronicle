@@ -194,6 +194,20 @@ fn emit_violence_kos(
     (refugee_ko, signal_ko)
 }
 
+
+fn notify_sensors_of_strike(world: &mut World, system: EntityId) {
+    let observers: Vec<_> = world
+        .contact
+        .empires
+        .iter()
+        .filter(|(_, c)| c.fog.known_systems.contains_key(&system))
+        .map(|(id, _)| *id)
+        .collect();
+    for obs in observers {
+        let _ = crate::sensors::detect_strike(world, obs, system, false);
+    }
+}
+
 /// Apply a planetary layer strike: write EnvLayers, chronicle event, fine-hot,
 /// victim standing, and rumor KOs (no auto-acquire for witnesses).
 pub fn strike_layers(
@@ -231,6 +245,7 @@ pub fn strike_layers(
 
     push_fine_hot(world, system);
     apply_event_for_standing(world, &chronicle);
+    notify_sensors_of_strike(world, system);
 
     let (refugee_ko, signal_ko) = emit_violence_kos(
         world,
@@ -295,6 +310,7 @@ pub fn salt_world(
 
     push_fine_hot(world, system);
     apply_event_for_standing(world, &chronicle);
+    notify_sensors_of_strike(world, system);
 
     let (refugee_ko, signal_ko) = emit_violence_kos(
         world,
@@ -603,6 +619,38 @@ mod tests {
             .any(|(_, ko)| ko.kind == KoKind::Wreck));
     }
 
+
+    #[test]
+    fn strike_refreshes_observer_fog() {
+        use crate::contact::grant_fog;
+
+        let mut w = World::new(40);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let body = w.ledger.spawn_body(system);
+        let observer = EmpireId(9);
+        grant_fog(&mut w, observer, system);
+        let before = w.contact.get(observer).unwrap().fog.known_systems[&system].last_known_tick;
+        w.tick(1);
+        strike_layers(
+            &mut w,
+            EmpireId(1),
+            EmpireId(2),
+            system,
+            body,
+            StrikeKind::OrbitalStrike,
+            EnvLayers {
+                atmosphere_pressure: 0.0,
+                temperature: 0.0,
+                radiation: 2.0,
+                toxins_fallout: 0.0,
+                biosphere: 0.0,
+            },
+        )
+        .unwrap();
+        let after = w.contact.get(observer).unwrap().fog.known_systems[&system].last_known_tick;
+        assert!(after >= before);
+        assert_eq!(after, w.master_tick());
+    }
     fn body_system_mismatch_errors() {
         let mut w = World::new(203);
         let systems: Vec<_> = w.ledger().systems().map(|(id, _)| *id).collect();

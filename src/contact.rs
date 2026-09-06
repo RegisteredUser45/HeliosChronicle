@@ -225,6 +225,7 @@ pub fn sign_treaty(
     let tick = world.master_tick();
     let id = EntityId(world.contact.next_treaty_id);
     world.contact.next_treaty_id += 1;
+    let open_passage = clauses.iter().any(|c| matches!(c, TreatyClause::OpenPassage));
     let treaty = Treaty {
         id,
         a,
@@ -236,6 +237,15 @@ pub fn sign_treaty(
     world.contact.ensure(a).treaties.push(treaty.clone());
     world.contact.ensure(b).treaties.push(treaty);
     push_contact_hot_empires(world, a, b);
+    // OpenPassage: mutual diplomatic fog on each other's capitals (if any).
+    if open_passage {
+        if let Some(cap_a) = world.ledger.capital_of(a) {
+            grant_fog(world, b, cap_a);
+        }
+        if let Some(cap_b) = world.ledger.capital_of(b) {
+            grant_fog(world, a, cap_b);
+        }
+    }
     let ev = world.log.append(
         tick,
         EventKind::TreatySigned {
@@ -471,6 +481,28 @@ mod tests {
             &e.kind,
             EventKind::ContractDefault { contract_id, .. } if *contract_id == id
         )));
+    }
+
+
+    #[test]
+    fn open_passage_grants_capital_fog() {
+        let mut w = World::new(30);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        // Mark system as A's capital
+        if let Some(s) = w.ledger.get_mut(sys) {
+            s.is_home_capital = true;
+            s.home_empire = Some(a);
+        }
+        sign_treaty(&mut w, a, b, vec![TreatyClause::OpenPassage]);
+        assert!(w
+            .contact
+            .get(b)
+            .unwrap()
+            .fog
+            .known_systems
+            .contains_key(&sys));
     }
 
 }
