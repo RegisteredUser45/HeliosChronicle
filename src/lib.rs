@@ -27,8 +27,8 @@ pub mod hulls;
 
 pub use contact::{
     break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, push_fine_hot,
-    sign_contract, sign_treaty, upgrade_fog, Contract, ContractKind, EmpireContact,
-    EmpireContactStore, FogState, SystemFogEntry, Treaty, TreatyClause,
+    sense_fleet, sign_contract, sign_treaty, upgrade_fog, Contract, ContractKind, EmpireContact,
+    EmpireContactStore, FleetFogEntry, FogState, SystemFogEntry, Treaty, TreatyClause,
 };
 pub use entity::{
     BodyEntity, EmpireEntity, EmpireId, EntityId, EntityLedger, EnvLayers, OrderEntity,
@@ -58,6 +58,7 @@ pub use world::World;
 pub use worlds::{apply_facility_soaks, apply_layer_burst, apply_life_support_drain, apply_pop_deficits, compute_deficits, evacuate_body, life_support_bill, DeficitReport};
 pub use sensors::{
     detect_strike, discover_wreck, in_sensor_range, poll_signal_envelope, receive_signal, sense_system,
+    track_fleet,
     SENSOR_RANGE_STUB,
 };
 pub use violence::{

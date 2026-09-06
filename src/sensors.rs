@@ -125,6 +125,23 @@ pub fn poll_signal_envelope(
     n
 }
 
+
+/// Sensor track of a fleet: requires system in range (or force), then G sense_fleet.
+pub fn track_fleet(
+    world: &mut World,
+    observer: EmpireId,
+    fleet: EntityId,
+    system: EntityId,
+    force_in_range: bool,
+) -> bool {
+    if !in_sensor_range(world, observer, system, force_in_range) {
+        return false;
+    }
+    sense_system(world, observer, system);
+    crate::contact::sense_fleet(world, observer, fleet, Some(system));
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +246,18 @@ mod tests {
             .carriers
             .iter()
             .any(|c| matches!(c, crate::knowledge::CarrierId::Empire(e) if *e == obs)));
+    }
+
+
+    #[test]
+    fn track_fleet_requires_range() {
+        let mut w = World::new(6);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        let obs = EmpireId(6);
+        let fleet = EntityId(77);
+        assert!(!track_fleet(&mut w, obs, fleet, sys, false));
+        assert!(track_fleet(&mut w, obs, fleet, sys, true));
+        assert!(w.contact.get(obs).unwrap().fog.known_fleets.contains_key(&fleet));
     }
 
 }

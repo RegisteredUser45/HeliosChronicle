@@ -29,10 +29,31 @@ impl SystemFogEntry {
     }
 }
 
+
+/// Per-fleet fog entry (last fix + uncertainty). H sensors upgrade this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FleetFogEntry {
+    pub last_known_tick: u64,
+    pub uncertainty: f64,
+    pub last_system: Option<EntityId>,
+}
+
+impl FleetFogEntry {
+    pub fn fresh(tick: u64, system: Option<EntityId>) -> Self {
+        Self {
+            last_known_tick: tick,
+            uncertainty: 1.0,
+            last_system: system,
+        }
+    }
+}
+
 /// Fog is knowledge state per empire, not a map shader.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FogState {
     pub known_systems: BTreeMap<EntityId, SystemFogEntry>,
+    #[serde(default)]
+    pub known_fleets: BTreeMap<EntityId, FleetFogEntry>,
 }
 
 /// Minimal v1 treaty clause enum (Lead Q3 — no opaque bags).
@@ -415,6 +436,33 @@ pub fn default_contract(world: &mut World, contract_id: EntityId) -> bool {
     }
 }
 
+
+/// Record / refresh a fleet last-known fix in observer fog (G knowledge state).
+pub fn sense_fleet(
+    world: &mut World,
+    observer: EmpireId,
+    fleet: EntityId,
+    at_system: Option<EntityId>,
+) {
+    let tick = world.master_tick();
+    let entry = world
+        .contact
+        .ensure(observer)
+        .fog
+        .known_fleets
+        .entry(fleet)
+        .or_insert_with(|| FleetFogEntry::fresh(tick, at_system));
+    entry.last_known_tick = tick;
+    entry.uncertainty = (entry.uncertainty * 0.5).max(0.0);
+    if at_system.is_some() {
+        entry.last_system = at_system;
+    }
+    if let Some(sys) = at_system {
+        push_fine_hot(world, sys);
+    }
+    world.recompute_outcome_hash();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,6 +551,20 @@ mod tests {
             .fog
             .known_systems
             .contains_key(&sys));
+    }
+
+
+    #[test]
+    fn sense_fleet_updates_fog() {
+        let mut w = World::new(50);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        let obs = EmpireId(1);
+        let fleet = EntityId(99);
+        sense_fleet(&mut w, obs, fleet, Some(sys));
+        let e = w.contact.get(obs).unwrap().fog.known_fleets.get(&fleet).unwrap();
+        assert_eq!(e.last_known_tick, w.master_tick());
+        assert_eq!(e.last_system, Some(sys));
+        assert!(e.uncertainty < 1.0);
     }
 
 }
