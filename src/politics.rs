@@ -98,6 +98,14 @@ pub fn apply_event_for_standing(world: &mut World, event: &ChronicleEvent) {
             bump_standing(world, *a, *b, STANDING_FIRST_CONTACT, seq);
             bump_standing(world, *b, *a, STANDING_FIRST_CONTACT, seq);
         }
+        EventKind::TreatySigned { a, b, .. } => {
+            bump_standing(world, *a, *b, STANDING_FIRST_CONTACT, seq);
+            bump_standing(world, *b, *a, STANDING_FIRST_CONTACT, seq);
+        }
+        EventKind::TreatyBroken { a, b, .. } => {
+            bump_standing(world, *a, *b, -STANDING_FIRST_CONTACT, seq);
+            bump_standing(world, *b, *a, -STANDING_FIRST_CONTACT, seq);
+        }
         EventKind::Salt { actor, victim, .. } => {
             // Victim auto-react (Lead Q1) — hostility toward actor.
             bump_standing(world, *victim, *actor, -STANDING_SALT_VICTIM, seq);
