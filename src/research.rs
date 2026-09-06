@@ -52,6 +52,9 @@ pub struct Lab {
     /// Queued segment id, if any.
     pub assigned_segment: Option<String>,
     pub progress_rp: f64,
+    /// Optional system where material_gates are checked (stocks/rares present).
+    #[serde(default)]
+    pub site_system: Option<EntityId>,
 }
 
 /// Day-one stub tech book (refs catalog v4 dotted ids only).
@@ -303,8 +306,76 @@ pub fn empire_has_unlock(empire: &EmpireEntity, catalog_id: &str) -> bool {
     empire.unlocked_catalog_ids.contains(catalog_id)
 }
 
+
+pub fn set_lab_site(lab: &mut Lab, system: Option<EntityId>) {
+    lab.site_system = system;
+}
+
+/// True when each material_gate is satisfiable at `system` without consuming:
+/// - `stock.*` / `rare.*`: deposits + salvage_by_stock cover qty≥1
+/// - `recipe.*` / `module.*` / `facility.*`: empire already unlocked, or recipe inputs available
+pub fn material_gates_met(
+    world: &crate::world::World,
+    empire: &EmpireEntity,
+    system: EntityId,
+    segment: &TechSegment,
+) -> bool {
+    let Some(sys) = world.ledger.get(system) else {
+        return false;
+    };
+    for gate in &segment.material_gates {
+        if gate.starts_with("stock.") || gate.starts_with("rare.") {
+            let in_dep: f64 = sys
+                .deposits
+                .iter()
+                .filter(|d| d.stock_id == *gate)
+                .map(|d| d.quantity)
+                .sum();
+            let in_sal = sys.salvage_by_stock.get(gate).copied().unwrap_or(0.0);
+            if in_dep + in_sal + 1e-12 < 1.0 {
+                return false;
+            }
+        } else if gate.starts_with("recipe.") {
+            if empire_has_unlock(empire, gate) {
+                continue;
+            }
+            // soft: treat as met if try_run_recipe would find inputs (peek via deposits)
+            // fall through to unlocked-or-present check using catalog BOM
+            let cat = embedded_catalog();
+            let Some(recipe) = cat.recipes.iter().find(|r| r.id == *gate) else {
+                return false;
+            };
+            for entry in &recipe.bom {
+                let stock = entry.stock.as_ref().or(entry.rare.as_ref());
+                let Some(stock) = stock else { continue; };
+                let need = if entry.qty > 0.0 { entry.qty } else { 1.0 };
+                let in_dep: f64 = sys
+                    .deposits
+                    .iter()
+                    .filter(|d| d.stock_id == *stock)
+                    .map(|d| d.quantity)
+                    .sum();
+                let in_sal = sys.salvage_by_stock.get(stock).copied().unwrap_or(0.0);
+                if in_dep + in_sal + 1e-12 < need {
+                    return false;
+                }
+            }
+        } else if gate.starts_with("module.") || gate.starts_with("facility.") {
+            if !empire_has_unlock(empire, gate) {
+                return false;
+            }
+        } else {
+            // unknown family — require unlock flag
+            if !empire_has_unlock(empire, gate) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 pub fn make_lab(id: EntityId, empire_id: EntityId, capacity: f64) -> Lab {
-    Lab { id, empire_id, capacity: capacity.max(0.0), assigned_segment: None, progress_rp: 0.0 }
+    Lab { id, empire_id, capacity: capacity.max(0.0), assigned_segment: None, progress_rp: 0.0, site_system: None }
 }
 
 pub fn assign_lab(lab: &mut Lab, segment_id: &str) -> Result<(), String> {
@@ -355,6 +426,16 @@ pub fn tick_all_labs(world: &mut crate::world::World, dt: u64) {
 pub fn tick_lab_on_world(world: &mut crate::world::World, lab_id: EntityId, dt: u64) -> Result<Option<String>, String> {
     use crate::event::EventKind;
     let empire_id = world.labs.get(&lab_id).map(|l| l.empire_id).ok_or_else(|| format!("lab {lab_id} not found"))?;
+    let site = world.labs.get(&lab_id).and_then(|l| l.site_system);
+    let assigned = world.labs.get(&lab_id).and_then(|l| l.assigned_segment.clone());
+    if let (Some(system), Some(seg_id)) = (site, assigned) {
+        if let Some(seg) = find_segment(&seg_id) {
+            let empire_ref = world.ledger.get_empire(empire_id).ok_or_else(|| format!("empire {empire_id} not found"))?;
+            if !material_gates_met(world, empire_ref, system, &seg) {
+                return Ok(None); // soft stall — no RP progress
+            }
+        }
+    }
     let globals = world.globals.clone();
     let done = {
         let lab = world.labs.get_mut(&lab_id).unwrap();
@@ -453,5 +534,28 @@ mod tests {
         }
         let (lines, _) = stub_tech_book();
         assert!(lines.iter().any(|l| l.id == "line.outfitting"));
+    }
+
+    #[test]
+    fn material_gates_stall_without_stocks() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::world::World;
+        let mut w = World::new(21);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment("seg.basic_lab").unwrap()).unwrap();
+        let lab_id = w.ledger.alloc_id();
+        let mut lab = make_lab(lab_id, empire, 1000.0);
+        assign_lab(&mut lab, "seg.yard").unwrap();
+        set_lab_site(&mut lab, Some(system));
+        w.labs.insert(lab_id, lab);
+        // no yard_mk1 BOM → stall
+        w.tick(1000);
+        assert!(!w.ledger.get_empire(empire).unwrap().unlocked_segments.contains("seg.yard"));
+        // seed BOM and progress
+        add_deposit(&mut w, system, Deposit::new("stock.ore_binding", 20.0, 1.0, ExtractorKind::State)).unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.silicates", 8.0, 1.0, ExtractorKind::State)).unwrap();
+        w.tick(1000);
+        assert!(w.ledger.get_empire(empire).unwrap().unlocked_segments.contains("seg.yard"));
     }
 }

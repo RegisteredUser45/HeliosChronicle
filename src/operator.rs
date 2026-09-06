@@ -254,6 +254,53 @@ impl<'a> Operator<'a> {
         Ok(id)
     }
 
+
+    /// Bind a lab to a system for material_gates checks.
+    pub fn set_lab_research_site(
+        &mut self,
+        lab_id: EntityId,
+        system: Option<EntityId>,
+    ) -> Result<(), OperatorError> {
+        let lab = self.world.labs.get_mut(&lab_id).ok_or(OperatorError::NotFound(lab_id))?;
+        crate::research::set_lab_site(lab, system);
+        let tick = self.world.master_tick();
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: lab_id,
+                field: "site_system".into(),
+                old: String::new(),
+                new: format!("{system:?}"),
+            },
+        );
+        Ok(())
+    }
+
+    /// Salvage-jump unlock a segment (incomplete stats flag; no RNG).
+    pub fn salvage_research_segment(
+        &mut self,
+        empire_id: EntityId,
+        segment_id: &str,
+    ) -> Result<(), OperatorError> {
+        let seg = crate::research::find_segment(segment_id)
+            .ok_or_else(|| OperatorError::Other(format!("unknown segment {segment_id}")))?;
+        let empire = self
+            .world
+            .ledger_mut()
+            .get_empire_mut(empire_id)
+            .ok_or(OperatorError::NotFound(empire_id))?;
+        crate::research::salvage_unlock_segment(empire, &seg).map_err(OperatorError::Other)?;
+        let tick = self.world.master_tick();
+        self.world.log_mut().append(
+            tick,
+            EventKind::SegmentResearched {
+                empire: empire_id,
+                segment: segment_id.into(),
+            },
+        );
+        Ok(())
+    }
+
     /// Assign a lab to a research segment id.
     pub fn assign_research(&mut self, lab_id: EntityId, segment_id: &str) -> Result<(), OperatorError> {
         let lab = self.world.labs.get_mut(&lab_id).ok_or(OperatorError::NotFound(lab_id))?;
