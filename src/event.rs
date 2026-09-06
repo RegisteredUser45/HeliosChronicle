@@ -153,6 +153,10 @@ pub enum EventKind {
         new: i32,
         reason_seq: u64,
     },
+    SegmentResearched { empire: EntityId, segment: String },
+    DesignRegistered { empire: EntityId, design: EntityId },
+    YardTooled { empire: EntityId, design: EntityId },
+    ShipBuilt { empire: EntityId, ship: EntityId, design: EntityId },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

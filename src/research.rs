@@ -244,6 +244,83 @@ pub fn salvage_unlock_segment(
     Ok(())
 }
 
+
+pub fn find_segment(segment_id: &str) -> Option<TechSegment> {
+    stub_tech_book().1.into_iter().find(|s| s.id == segment_id)
+}
+
+pub fn line_prereqs_met(empire: &EmpireEntity, segment: &TechSegment) -> bool {
+    let (lines, segs) = stub_tech_book();
+    let Some(line) = lines.iter().find(|l| l.id == segment.line_id) else { return false; };
+    for sid in &line.segment_ids {
+        if let Some(s) = segs.iter().find(|s| s.id == *sid) {
+            if s.index < segment.index && !empire.unlocked_segments.contains(&s.id) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+pub fn empire_has_unlock(empire: &EmpireEntity, catalog_id: &str) -> bool {
+    empire.unlocked_catalog_ids.contains(catalog_id)
+}
+
+pub fn make_lab(id: EntityId, empire_id: EntityId, capacity: f64) -> Lab {
+    Lab { id, empire_id, capacity: capacity.max(0.0), assigned_segment: None, progress_rp: 0.0 }
+}
+
+pub fn assign_lab(lab: &mut Lab, segment_id: &str) -> Result<(), String> {
+    let seg = find_segment(segment_id).ok_or_else(|| format!("unknown segment {segment_id}"))?;
+    gates_ref_catalog(&seg)?;
+    lab.assigned_segment = Some(segment_id.to_string());
+    lab.progress_rp = 0.0;
+    Ok(())
+}
+
+pub fn tick_lab(
+    lab: &mut Lab,
+    empire: &mut EmpireEntity,
+    globals: &Globals,
+    dt: u64,
+) -> Result<Option<String>, String> {
+    let Some(seg_id) = lab.assigned_segment.clone() else { return Ok(None); };
+    if empire.unlocked_segments.contains(&seg_id) {
+        lab.assigned_segment = None;
+        lab.progress_rp = 0.0;
+        return Ok(None);
+    }
+    let seg = find_segment(&seg_id).ok_or_else(|| format!("unknown segment {seg_id}"))?;
+    if !line_prereqs_met(empire, &seg) {
+        return Err(format!("line prereqs unmet for {seg_id}"));
+    }
+    let cost = segment_rp_cost(globals);
+    lab.progress_rp += lab.capacity * dt as f64;
+    if lab.progress_rp + f64::EPSILON >= cost {
+        unlock_segment(empire, &seg)?;
+        lab.assigned_segment = None;
+        lab.progress_rp = 0.0;
+        return Ok(Some(seg_id));
+    }
+    Ok(None)
+}
+
+pub fn tick_lab_on_world(world: &mut crate::world::World, lab_id: EntityId, dt: u64) -> Result<Option<String>, String> {
+    use crate::event::EventKind;
+    let empire_id = world.labs.get(&lab_id).map(|l| l.empire_id).ok_or_else(|| format!("lab {lab_id} not found"))?;
+    let globals = world.globals.clone();
+    let done = {
+        let lab = world.labs.get_mut(&lab_id).unwrap();
+        let empire = world.ledger.get_empire_mut(empire_id).ok_or_else(|| format!("empire {empire_id} not found"))?;
+        tick_lab(lab, empire, &globals, dt)?
+    };
+    if let Some(ref seg) = done {
+        let tick = world.master_tick;
+        world.log.append(tick, EventKind::SegmentResearched { empire: empire_id, segment: seg.clone() });
+    }
+    Ok(done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,8 +352,31 @@ mod tests {
 
     #[test]
     fn no_prototype_rng_path() {
-        // Compile-time documentation: designed → tooled → buildable only.
         let cost = segment_rp_cost(&Globals::default());
         assert!(cost > 0.0);
+    }
+
+    #[test]
+    fn lab_tick_completes_segment_without_rng() {
+        let g = Globals::default();
+        let mut empire = EmpireEntity::from_defaults(EntityId(1), &g, None);
+        unlock_segment(&mut empire, &find_segment("seg.basic_lab").unwrap()).unwrap();
+        let mut lab = make_lab(EntityId(2), EntityId(1), 1.0);
+        assign_lab(&mut lab, "seg.yard").unwrap();
+        let mut done = None;
+        while done.is_none() {
+            done = tick_lab(&mut lab, &mut empire, &g, 100).unwrap();
+        }
+        assert_eq!(done.as_deref(), Some("seg.yard"));
+        assert!(empire.unlocked_catalog_ids.contains("facility.yard"));
+    }
+
+    #[test]
+    fn line_prereq_blocks_out_of_order() {
+        let g = Globals::default();
+        let mut empire = EmpireEntity::from_defaults(EntityId(1), &g, None);
+        let mut lab = make_lab(EntityId(2), EntityId(1), 1000.0);
+        assign_lab(&mut lab, "seg.yard").unwrap();
+        assert!(tick_lab(&mut lab, &mut empire, &g, 10_000).unwrap_err().contains("prereqs"));
     }
 }

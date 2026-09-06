@@ -10,6 +10,7 @@ use crate::entity::{EntityId, EntityLedger};
 use crate::event::{EventKind, EventLog};
 use crate::globals::Globals;
 use crate::hulls::{ShipDesign, ShipInstance};
+use crate::research::Lab;
 use crate::knowledge::KnowledgeStore;
 use crate::lod::LodMode;
 use crate::sky;
@@ -45,6 +46,8 @@ pub struct World {
     /// Phase F ship instances.
     #[serde(default)]
     pub ships: BTreeMap<EntityId, ShipInstance>,
+    #[serde(default)]
+    pub labs: BTreeMap<EntityId, Lab>,
     /// Fingerprint of ledger + tick for cheap determinism checks.
     pub outcome_hash: u64,
 }
@@ -70,6 +73,7 @@ impl World {
             minds_flags: MindsFlags::default(),
             ship_designs: BTreeMap::new(),
             ships: BTreeMap::new(),
+            labs: BTreeMap::new(),
             outcome_hash: 0,
         };
         world.log.append(0, EventKind::WorldCreated { seed });
@@ -301,6 +305,7 @@ impl World {
         self.contact.empire_count().hash(&mut h);
         self.ship_designs.len().hash(&mut h);
         self.ships.len().hash(&mut h);
+        self.labs.len().hash(&mut h);
         self.outcome_hash = h.finish();
     }
 

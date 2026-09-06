@@ -177,6 +177,8 @@ pub struct EmpireEntity {
     /// Salvage jumps with incomplete stats.
     #[serde(default)]
     pub incomplete_stat_segments: BTreeSet<String>,
+    #[serde(default)]
+    pub tooled_design_ids: BTreeSet<u64>,
 }
 
 impl EmpireEntity {
@@ -190,6 +192,7 @@ impl EmpireEntity {
             unlocked_segments: BTreeSet::new(),
             unlocked_catalog_ids: BTreeSet::new(),
             incomplete_stat_segments: BTreeSet::new(),
+            tooled_design_ids: BTreeSet::new(),
         }
     }
 }
@@ -367,7 +370,7 @@ impl EntityLedger {
         Self::default()
     }
 
-    fn alloc_id(&mut self) -> EntityId {
+    pub fn alloc_id(&mut self) -> EntityId {
         let id = EntityId(self.next_id);
         self.next_id += 1;
         id
