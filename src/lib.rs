@@ -17,14 +17,15 @@ pub mod politics;
 pub mod save;
 pub mod sky;
 pub mod world;
+pub mod worlds;
 
 pub use contact::{
     first_contact, push_fine_hot, EmpireContact, EmpireContactStore, FogState, SystemFogEntry,
     Treaty, TreatyClause,
 };
 pub use entity::{
-    EmpireEntity, EmpireId, EntityId, EntityLedger, OrderEntity, OrderIntent, OrderSource,
-    OrderStatus, SystemEntity,
+    BodyEntity, EmpireEntity, EmpireId, EntityId, EntityLedger, EnvLayers, OrderEntity,
+    OrderIntent, OrderSource, OrderStatus, SystemEntity,
 };
 pub use event::{ChronicleEvent, EventKind, EventLog};
 pub use globals::Globals;
@@ -41,6 +42,8 @@ pub use politics::{
 };
 pub use save::{load_world, save_world, SaveError};
 pub use world::World;
+pub use worlds::{apply_layer_burst, compute_deficits, DeficitReport};
+pub use globals::{Band, SpeciesEnvelope};
 
 /// Run two worlds from the same seed for `ticks` and return whether outcomes match.
 ///

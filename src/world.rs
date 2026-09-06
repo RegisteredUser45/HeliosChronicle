@@ -10,6 +10,7 @@ use crate::event::{EventKind, EventLog};
 use crate::globals::Globals;
 use crate::knowledge::KnowledgeStore;
 use crate::lod::LodMode;
+use crate::sky;
 use crate::minds::MindsFlags;
 use crate::politics::StandingStore;
 
@@ -87,6 +88,8 @@ impl World {
             world
                 .log
                 .append(0, EventKind::Spawn { system: id });
+            // Phase D: one stub body per seeded system
+            let _body = world.ledger.spawn_body(id);
         }
 
         world.recompute_outcome_hash();
@@ -175,11 +178,15 @@ impl World {
         let from = self.master_tick;
         let to = from.saturating_add(dt);
 
+        // B: slide absolute fuse_end_tick while capital home-paused (freeze countdown).
+        sky::apply_fuse_pause_slide(self, dt);
+
         // Quiet vs hot placeholder: under coarse LOD, skip fine work on quiet
         // systems; under fine, process everyone. Fuse uses absolute end ticks.
         let lod = self.lod;
         let mut fuse_ends: Vec<EntityId> = Vec::new();
         let mut fuse_ticks: Vec<(EntityId, u64)> = Vec::new();
+        let mut deplete_checks: Vec<EntityId> = Vec::new();
 
         for (_, sys) in self.ledger.systems_mut() {
             let process = match lod {
@@ -189,9 +196,9 @@ impl World {
             };
 
             if process {
-                // Placeholder "work": nudge quiet binding by a tiny amount only when fine.
-                if matches!(lod, LodMode::Fine) && !sys.depleted {
-                    // no-op placeholder drain; Phase C owns real drain
+                // Placeholder "work": Phase C owns real drain; B reacts at threshold.
+                if matches!(lod, LodMode::Fine) && !sys.depleted && !sys.ended {
+                    deplete_checks.push(sys.id);
                 }
                 if sys.fuse_crossed_end(from, dt) {
                     fuse_ends.push(sys.id);
@@ -220,12 +227,15 @@ impl World {
             );
         }
         for id in fuse_ends {
-            if let Some(sys) = self.ledger.get_mut(id) {
-                sys.fuse_end_tick = None;
-                sys.fuse_remaining = Some(0);
-            }
+            sky::apply_fuse_end(self, id);
             self.log.append(to, EventKind::FuseEnd { system: id });
         }
+
+        for id in deplete_checks {
+            sky::check_depletion(self, id);
+        }
+
+        sky::maintain_live_band(self);
 
         self.log.append(
             to,
@@ -258,6 +268,20 @@ impl World {
             sys.is_home_capital.hash(&mut h);
             sys.home_flag.hash(&mut h);
         }
+        self.ledger.bodies_len().hash(&mut h);
+        for (id, body) in self.ledger.bodies() {
+            id.0.hash(&mut h);
+            body.system.0.hash(&mut h);
+            body.pops.to_bits().hash(&mut h);
+            body.automation_active.hash(&mut h);
+            body.layers.atmosphere_pressure.to_bits().hash(&mut h);
+            body.layers.temperature.to_bits().hash(&mut h);
+            body.layers.radiation.to_bits().hash(&mut h);
+            body.layers.toxins_fallout.to_bits().hash(&mut h);
+            body.layers.biosphere.to_bits().hash(&mut h);
+        }
+        self.globals.envelope.pressure.min.to_bits().hash(&mut h);
+        self.globals.envelope.pressure.max.to_bits().hash(&mut h);
         self.log.len().hash(&mut h);
         // G/P fingerprint: KO count + standing + fog empire count
         self.knowledge.len().hash(&mut h);

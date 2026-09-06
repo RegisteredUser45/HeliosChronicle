@@ -4,6 +4,51 @@ use serde::{Deserialize, Serialize};
 
 use crate::cosmology::embedded_catalog;
 
+
+/// Continuous [min, max] band for species envelope matching.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Band {
+    pub min: f64,
+    pub max: f64,
+}
+
+impl Default for Band {
+    fn default() -> Self {
+        Self { min: 0.0, max: 1.0 }
+    }
+}
+
+/// One-sophont species envelope (Phase D). Continuous bands, not habitability grades.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpeciesEnvelope {
+    pub pressure: Band,
+    pub temperature: Band,
+    pub gravity: Band,
+    pub radiation: Band,
+    /// Breathable mix stub (N2/O2 fraction sum target); operator-editable.
+    pub breathable_o2_fraction: f64,
+    pub calories_need: f64,
+    pub water_need: f64,
+    pub baseline_lifespan: f64,
+    pub fertility: f64,
+}
+
+impl Default for SpeciesEnvelope {
+    fn default() -> Self {
+        Self {
+            pressure: Band { min: 0.5, max: 1.5 },
+            temperature: Band { min: 250.0, max: 320.0 },
+            gravity: Band { min: 0.5, max: 1.5 },
+            radiation: Band { min: 0.0, max: 1.0 },
+            breathable_o2_fraction: 0.21,
+            calories_need: 1.0,
+            water_need: 1.0,
+            baseline_lifespan: 80.0,
+            fertility: 1.0,
+        }
+    }
+}
+
 /// One master era length; dry-time, fuse length, and research segment time
 /// are editable ratios of that master length.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,6 +92,11 @@ pub struct Globals {
     /// Default evacuate-vs-die-in-place bias [0,1] (default 0.6).
     #[serde(default = "default_evacuate_vs_die_in_place")]
     pub evacuate_vs_die_in_place: f64,
+
+    // --- Phase D worlds ---
+    /// Species envelope (continuous bands).
+    #[serde(default)]
+    pub envelope: SpeciesEnvelope,
 }
 
 fn default_dry_threshold() -> f64 {
@@ -92,6 +142,7 @@ impl Default for Globals {
             salt_willingness: default_salt_willingness(),
             punishment_willingness: default_punishment_willingness(),
             evacuate_vs_die_in_place: default_evacuate_vs_die_in_place(),
+            envelope: SpeciesEnvelope::default(),
         }
     }
 }

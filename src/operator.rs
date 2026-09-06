@@ -230,6 +230,113 @@ impl<'a> Operator<'a> {
     }
 
     /// Force-arm a fuse ending at an absolute master tick (stub for B).
+
+    /// Mutate a Phase D body field. Every successful mutation is logged.
+    pub fn set_body_field(
+        &mut self,
+        id: EntityId,
+        field: &str,
+        value: &str,
+    ) -> Result<(), OperatorError> {
+        let tick = self.world.master_tick();
+        let body = self
+            .world
+            .ledger_mut()
+            .get_body_mut(id)
+            .ok_or(OperatorError::NotFound(id))?;
+
+        let (old, new) = match field {
+            "pops" => {
+                let v: f64 = value.parse().map_err(|_| OperatorError::InvalidValue {
+                    field: field.into(),
+                    reason: "expected f64".into(),
+                })?;
+                let old = body.pops.to_string();
+                body.pops = v;
+                (old, v.to_string())
+            }
+            "automation_active" => {
+                let v = parse_bool(value).ok_or_else(|| OperatorError::InvalidValue {
+                    field: field.into(),
+                    reason: "expected bool".into(),
+                })?;
+                let old = body.automation_active.to_string();
+                body.automation_active = v;
+                (old, v.to_string())
+            }
+            "structure_soak" | "power_soak" | "upkeep_soak" => {
+                let v: f64 = value.parse().map_err(|_| OperatorError::InvalidValue {
+                    field: field.into(),
+                    reason: "expected f64".into(),
+                })?;
+                let old = match field {
+                    "structure_soak" => {
+                        let o = body.structure_soak.to_string();
+                        body.structure_soak = v;
+                        o
+                    }
+                    "power_soak" => {
+                        let o = body.power_soak.to_string();
+                        body.power_soak = v;
+                        o
+                    }
+                    _ => {
+                        let o = body.upkeep_soak.to_string();
+                        body.upkeep_soak = v;
+                        o
+                    }
+                };
+                (old, v.to_string())
+            }
+            "atmosphere_pressure" | "temperature" | "radiation" | "toxins_fallout" | "biosphere" => {
+                let v: f64 = value.parse().map_err(|_| OperatorError::InvalidValue {
+                    field: field.into(),
+                    reason: "expected f64".into(),
+                })?;
+                let old = match field {
+                    "atmosphere_pressure" => {
+                        let o = body.layers.atmosphere_pressure.to_string();
+                        body.layers.atmosphere_pressure = v;
+                        o
+                    }
+                    "temperature" => {
+                        let o = body.layers.temperature.to_string();
+                        body.layers.temperature = v;
+                        o
+                    }
+                    "radiation" => {
+                        let o = body.layers.radiation.to_string();
+                        body.layers.radiation = v;
+                        o
+                    }
+                    "toxins_fallout" => {
+                        let o = body.layers.toxins_fallout.to_string();
+                        body.layers.toxins_fallout = v;
+                        o
+                    }
+                    _ => {
+                        let o = body.layers.biosphere.to_string();
+                        body.layers.biosphere = v;
+                        o
+                    }
+                };
+                (old, v.to_string())
+            }
+            other => return Err(OperatorError::UnknownField(other.into())),
+        };
+
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: id,
+                field: field.into(),
+                old,
+                new,
+            },
+        );
+        Ok(())
+    }
+
     pub fn arm_fuse(&mut self, id: EntityId, end_tick: u64) -> Result<(), OperatorError> {
         let tick = self.world.master_tick();
         {

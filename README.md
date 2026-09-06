@@ -6,7 +6,7 @@ A 2D, headless Aurora-class space-empire simulation. One species. Ships as modul
 
 The simulation is the product. The operator is optional. The tick and the editor share **one ledger**.
 
-See [STATEMENT.md](STATEMENT.md) for the full project statement, [LOCKS.md](LOCKS.md) for frozen issue resolutions, and [PHASES.md](PHASES.md) for the build order.
+Design notes: [docs/phase-bc-design.md](docs/phase-bc-design.md). See [STATEMENT.md](STATEMENT.md) for the full project statement, [LOCKS.md](LOCKS.md) for frozen issue resolutions, and [PHASES.md](PHASES.md) for the build order.
 
 ## Phase A — Kernel (landed)
 
@@ -21,7 +21,8 @@ Rust / Cargo library (`helios_chronicle`) + thin binary (`helios`).
 | Entity ledger (shared) | Done |
 | Operator R/W hooks | Done |
 | Stub LOD (Coarse \| Fine) | Done |
-| Galaxy / sky hooks | Stubs only (Phase B) |
+| Galaxy / sky hooks | Phase B headless slice (deplete/fuse/home/wilderness/spawn) |
+| Cosmology catalog v4 | Frozen dotted ids (`stock.ore_binding`, …) |
 
 ## Phase I — Minds (schema stub)
 
@@ -108,3 +109,7 @@ docs/
 ### Fuse + coarse LOD note
 
 Fuses use an **absolute** `fuse_end_tick` in master-tick units. A coarse step of size `dt` ends the fuse iff `before < end && before+dt >= end`, so jumps cannot skip the end without firing (monotonic, exactly once). Remaining is derived as `end.saturating_sub(master_tick)`.
+
+## Phase D stub (Empire)
+
+See [docs/DEF-design-notes.md](docs/DEF-design-notes.md). Ledger bodies expose five env layers + `automation_active`; species envelope is on `Globals`. Catalog ids: dotted v4 in `data/cosmology_catalog.json`.

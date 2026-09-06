@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use helios_chronicle::{
-    load_world, save_world, verify_determinism, LodMode, Operator, World,
+    load_world, save_world, sky, verify_determinism, LodMode, Operator, World,
 };
 
 #[derive(Parser, Debug)]
@@ -105,6 +105,12 @@ fn main() {
                 world.outcome_hash(),
                 world.log().len()
             );
+            let counts = sky::map_state_counts(&world);
+            let summary: Vec<String> = counts
+                .iter()
+                .map(|(st, n)| format!("{}={}", st.as_str(), n))
+                .collect();
+            println!("map_states {}", summary.join(" "));
 
             if let Some(path) = save {
                 save_world(&mut world, &path).expect("save failed");

@@ -276,7 +276,60 @@ pub struct OrderEntity {
     pub source: OrderSource,
 }
 
-/// Single shared entity store — systems + empires + orders, one id space.
+
+/// Five writable environment layers (Phase D). Weapons (H) and optional fuse-end
+/// bursts (B) write the same columns.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnvLayers {
+    pub atmosphere_pressure: f64,
+    pub temperature: f64,
+    pub radiation: f64,
+    pub toxins_fallout: f64,
+    pub biosphere: f64,
+}
+
+impl Default for EnvLayers {
+    fn default() -> Self {
+        Self {
+            atmosphere_pressure: 1.0,
+            temperature: 288.0,
+            radiation: 0.0,
+            toxins_fallout: 0.0,
+            biosphere: 1.0,
+        }
+    }
+}
+
+/// Body / colony stub on a system (Phase D).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BodyEntity {
+    pub id: EntityId,
+    pub system: EntityId,
+    pub layers: EnvLayers,
+    pub pops: f64,
+    /// When true and pops==0, C still drains binding (Lock 8); no life-support bill.
+    pub automation_active: bool,
+    pub structure_soak: f64,
+    pub power_soak: f64,
+    pub upkeep_soak: f64,
+}
+
+impl BodyEntity {
+    pub fn new(id: EntityId, system: EntityId) -> Self {
+        Self {
+            id,
+            system,
+            layers: EnvLayers::default(),
+            pops: 0.0,
+            automation_active: false,
+            structure_soak: 0.0,
+            power_soak: 0.0,
+            upkeep_soak: 0.0,
+        }
+    }
+}
+
+/// Single shared entity store — systems + empires + orders + bodies, one id space.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EntityLedger {
     next_id: u64,
@@ -285,6 +338,8 @@ pub struct EntityLedger {
     empires: BTreeMap<EntityId, EmpireEntity>,
     #[serde(default)]
     orders: BTreeMap<EntityId, OrderEntity>,
+    #[serde(default)]
+    bodies: BTreeMap<EntityId, BodyEntity>,
 }
 
 impl EntityLedger {
@@ -342,7 +397,10 @@ impl EntityLedger {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.systems.is_empty() && self.empires.is_empty() && self.orders.is_empty()
+        self.systems.is_empty()
+            && self.empires.is_empty()
+            && self.orders.is_empty()
+            && self.bodies.is_empty()
     }
 
     pub fn next_id(&self) -> u64 {
@@ -443,5 +501,42 @@ impl EntityLedger {
 
     pub fn orders_len(&self) -> usize {
         self.orders.len()
+    }
+
+    // --- Bodies (Phase D) ---
+
+    pub fn spawn_body(&mut self, system: EntityId) -> EntityId {
+        let id = self.alloc_id();
+        self.bodies.insert(id, BodyEntity::new(id, system));
+        id
+    }
+
+    pub fn insert_body(&mut self, entity: BodyEntity) {
+        self.bump_next(entity.id);
+        self.bodies.insert(entity.id, entity);
+    }
+
+    pub fn get_body(&self, id: EntityId) -> Option<&BodyEntity> {
+        self.bodies.get(&id)
+    }
+
+    pub fn get_body_mut(&mut self, id: EntityId) -> Option<&mut BodyEntity> {
+        self.bodies.get_mut(&id)
+    }
+
+    pub fn bodies(&self) -> impl Iterator<Item = (&EntityId, &BodyEntity)> {
+        self.bodies.iter()
+    }
+
+    pub fn bodies_mut(&mut self) -> impl Iterator<Item = (&EntityId, &mut BodyEntity)> {
+        self.bodies.iter_mut()
+    }
+
+    pub fn bodies_len(&self) -> usize {
+        self.bodies.len()
+    }
+
+    pub fn bodies_for_system(&self, system: EntityId) -> impl Iterator<Item = (&EntityId, &BodyEntity)> {
+        self.bodies.iter().filter(move |(_, b)| b.system == system)
     }
 }

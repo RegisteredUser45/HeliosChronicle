@@ -280,3 +280,188 @@ pub fn map_state_counts(world: &World) -> [(MapState, usize); 5] {
         (MapState::WildernessUnknown, wild),
     ]
 }
+
+
+#[cfg(test)]
+mod sky_tests {
+    use super::*;
+    use crate::entity::EmpireId;
+    use crate::event::EventKind;
+    use crate::globals::Globals;
+    use crate::lod::LodMode;
+    use crate::operator::Operator;
+    use crate::world::World;
+
+    #[test]
+    fn wilderness_immortal_until_claim_or_survey() {
+        let mut w = World::new(10);
+        let id = w.ledger.spawn_wilderness_system();
+        {
+            let s = w.ledger.get_mut(id).unwrap();
+            s.binding_remainder = 0.0;
+        }
+        assert!(!check_depletion(&mut w, id), "immortal wilderness must not deplete");
+        assert!(!w.ledger.get(id).unwrap().depleted);
+
+        survey_system(&mut w, id);
+        // surveyed ends immortality even if wilderness flag remains
+        assert!(check_depletion(&mut w, id));
+        assert!(w.ledger.get(id).unwrap().depleted);
+    }
+
+    #[test]
+    fn claim_alone_allows_depletion() {
+        let mut w = World::new(11);
+        let id = w.ledger.spawn_wilderness_system();
+        {
+            let s = w.ledger.get_mut(id).unwrap();
+            s.binding_remainder = 0.0;
+        }
+        assert!(!check_depletion(&mut w, id));
+        claim_system(&mut w, id);
+        assert!(check_depletion(&mut w, id), "claim alone ends immortality");
+        assert!(w.ledger.get(id).unwrap().depleted);
+        assert!(w.ledger.get(id).unwrap().fuse_end_tick.is_some());
+    }
+
+    #[test]
+    fn deplete_arms_fuse_from_globals_ratio() {
+        let mut g = Globals::default();
+        g.master_era_length = 1000;
+        g.fuse_length_ratio = 0.25; // 250
+        g.dry_threshold = 1.0;
+        let mut w = World::with_globals(12, g);
+        let id = w.ledger.spawn_system();
+        {
+            let s = w.ledger.get_mut(id).unwrap();
+            s.binding_remainder = 0.5;
+        }
+        assert!(check_depletion(&mut w, id));
+        let sys = w.ledger.get(id).unwrap();
+        assert_eq!(sys.fuse_end_tick, Some(250));
+        assert!(w.log.events().iter().any(|e| matches!(e.kind, EventKind::Deplete { system } if system == id)));
+        assert!(w.log.events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::FuseArmed { system, end_tick: 250 } if *system == id
+        )));
+    }
+
+    #[test]
+    fn remnant_set_on_fuse_end() {
+        let mut w = World::new(13);
+        let id = w.ledger.spawn_system();
+        {
+            let mut op = Operator::new(&mut w);
+            op.arm_fuse(id, 5).unwrap();
+        }
+        w.tick(5);
+        let sys = w.ledger.get(id).unwrap();
+        assert!(sys.ended);
+        assert!(sys.remnant_harvest.is_some());
+        assert!(sys.fuse_end_tick.is_none());
+        assert!(w.log.events().iter().any(|e| matches!(e.kind, EventKind::FuseEnd { system } if system == id)));
+    }
+
+    #[test]
+    fn home_pause_prevents_fuse_end_while_flag_held() {
+        let mut g = Globals::default();
+        g.home_pause_enabled = true;
+        let mut w = World::with_globals(14, g);
+        let id = w.ledger.spawn_system();
+        set_home_capital(&mut w, EmpireId(0), id).unwrap();
+        {
+            let mut op = Operator::new(&mut w);
+            op.arm_fuse(id, 3).unwrap();
+        }
+        // Ensure pause sync
+        apply_fuse_pause_slide(&mut w, 0);
+        assert!(w.ledger.get(id).unwrap().fuse_paused);
+        let end_before = w.ledger.get(id).unwrap().fuse_end_tick.unwrap();
+        w.tick(5);
+        let sys = w.ledger.get(id).unwrap();
+        assert!(!sys.ended, "paused capital must not end");
+        assert!(sys.fuse_end_tick.is_some());
+        assert!(sys.fuse_end_tick.unwrap() > end_before, "end tick must slide while paused");
+        // Clear home flag → countdown resumes
+        {
+            let s = w.ledger.get_mut(id).unwrap();
+            s.home_flag = false;
+            s.sync_fuse_paused(true);
+        }
+        let end_now = w.ledger.get(id).unwrap().fuse_end_tick.unwrap();
+        let need = end_now.saturating_sub(w.master_tick()) + 1;
+        w.tick(need);
+        assert!(w.ledger.get(id).unwrap().ended);
+    }
+
+    #[test]
+    fn spawn_uses_full_catalog_ids() {
+        let mut w = World::new(15);
+        let id = spawn_system_with_catalog(&mut w, false);
+        let stocks = &w.ledger.get(id).unwrap().binding_stocks;
+        let catalog = embedded_catalog();
+        for sid in catalog.spawn_stock_ids() {
+            assert!(
+                stocks.contains_key(sid),
+                "spawn missing catalog stock {sid}"
+            );
+        }
+        assert_eq!(stocks.len(), catalog.spawn_stock_ids().len());
+    }
+
+    #[test]
+    fn one_capital_enforced() {
+        let mut w = World::new(16);
+        let ids: Vec<_> = w.ledger.systems().map(|(i, _)| *i).take(2).map(|x| x).collect();
+        assert!(ids.len() >= 2);
+        let a = ids[0];
+        let b = ids[1];
+        let empire = EmpireId(1);
+        set_home_capital(&mut w, empire, a).unwrap();
+        assert!(w.ledger.get(a).unwrap().is_home_capital);
+        set_home_capital(&mut w, empire, b).unwrap();
+        assert!(!w.ledger.get(a).unwrap().is_home_capital);
+        assert!(!w.ledger.get(a).unwrap().home_flag);
+        assert!(w.ledger.get(b).unwrap().is_home_capital);
+        assert_eq!(w.ledger.get(b).unwrap().home_empire, Some(empire));
+    }
+
+    #[test]
+    fn map_state_home_paused() {
+        let mut w = World::new(17);
+        let id = w.ledger.spawn_system();
+        set_home_capital(&mut w, EmpireId(9), id).unwrap();
+        {
+            let mut op = Operator::new(&mut w);
+            op.arm_fuse(id, 100).unwrap();
+        }
+        apply_fuse_pause_slide(&mut w, 0);
+        assert_eq!(map_state(w.ledger.get(id).unwrap()), MapState::HomePaused);
+    }
+
+    #[test]
+    fn coarse_lod_fuse_end_still_monotonic_via_sky() {
+        let mut globals = Globals::default();
+        globals.coarse_dt = 10;
+        let mut w = World::with_globals(18, globals);
+        w.set_lod(LodMode::Coarse);
+        let id = w.ledger.spawn_system();
+        {
+            let mut op = Operator::new(&mut w);
+            op.arm_fuse(id, 25).unwrap();
+        }
+        w.tick(2);
+        assert_eq!(w.master_tick(), 20);
+        w.tick(1);
+        assert_eq!(w.master_tick(), 30);
+        let ends = w
+            .log
+            .events()
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::FuseEnd { system } if system == id))
+            .count();
+        assert_eq!(ends, 1);
+        assert!(w.ledger.get(id).unwrap().ended);
+        assert!(w.ledger.get(id).unwrap().remnant_harvest.is_some());
+    }
+}
