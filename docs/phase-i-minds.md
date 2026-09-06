@@ -70,7 +70,7 @@ Under `LodMode::Coarse`, `minds_tick_stub` only emits for empires that need atte
 ## Scoring (B + C)
 
 - Coarse bucket: `sky::map_state(sys)` only — no parallel map bits, no Dying variant.
-- Feed: ledger `binding_remainder` (Phase C aggregates deposits via `matter::reaggregate_*`; I never maintains a second feed number).
+- Feed: ledger `binding_remainder`; when known via G fog, multiply by `(1 - uncertainty)` (home/bootstrap = 0 uncertainty) (Phase C aggregates deposits via `matter::reaggregate_*`; I never maintains a second feed number).
 - Fuse: ledger `fuse_*` is physics truth once armed; AI *known* fuse number gated on `surveyed` / fog `surveyed_fuse`.
 - HomePaused: treated as stable until home-flag drop (same-tick `CapitalRescore`).
 - WildernessUnknown: uncertain feed, not infinite.

@@ -28,6 +28,7 @@ const FUSE_URGENCY_FRAC: f64 = 0.20;
 const UNCERTAIN_FUSE_SCORE: f64 = 25.0;
 /// Penalty applied to feed_score when the system is not known to the empire.
 const UNKNOWN_FEED_PENALTY: f64 = 50.0;
+/// Feed score is multiplied by (1 - fog uncertainty) when known via fog.
 
 /// Feature flags for Phase I minds behavior (default both off).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,6 +381,24 @@ fn fuse_urgent_known(world: &World, sys: &SystemEntity, fuse_known: bool) -> boo
     (rem as f64) < (fuse_len as f64) * FUSE_URGENCY_FRAC
 }
 
+
+/// Fog uncertainty for a known system (0 = certain). Home / bootstrap → 0.
+pub fn fog_uncertainty(world: &World, empire_id: EntityId, sys: &SystemEntity) -> f64 {
+    let eid = EmpireId(empire_id.0);
+    if sys.home_empire == Some(eid) {
+        return 0.0;
+    }
+    match world.contact.get(eid) {
+        Some(contact) => contact
+            .fog
+            .known_systems
+            .get(&sys.id)
+            .map(|e| e.uncertainty.clamp(0.0, 1.0))
+            .unwrap_or(1.0),
+        None => 0.0, // bootstrap known path
+    }
+}
+
 /// Score one system for an empire against B `MapState`. Returns `None` if system missing.
 pub fn score_system(
     world: &World,
@@ -406,6 +425,10 @@ pub fn score_system(
     };
     if !known {
         feed_score = (feed_score - UNKNOWN_FEED_PENALTY).max(0.0);
+    } else {
+        // G fog uncertainty discounts known feed (certain home = 0).
+        let u = fog_uncertainty(world, empire_id, sys);
+        feed_score *= 1.0 - u;
     }
 
     let fuse_score = match map_state {
@@ -1418,6 +1441,55 @@ mod minds_tests {
             b.automation_active,
             "high evacuate bias should leave automation"
         );
+    }
+
+
+    #[test]
+    fn fog_uncertainty_discounts_feed_score() {
+        let mut w = World::new(120);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 800.0;
+            s.depleted = false;
+            s.fuse_end_tick = None;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.home_empire = None;
+            s.home_flag = false;
+            s.is_home_capital = false;
+        }
+        // Contact registry without fog → not known (bootstrap off)
+        w.contact.ensure(EmpireId(empire.0));
+        assert!(!score_system(&w, empire, sys).unwrap().known);
+        crate::contact::grant_fog(&mut w, EmpireId(empire.0), sys);
+        w.contact
+            .ensure(EmpireId(empire.0))
+            .fog
+            .known_systems
+            .get_mut(&sys)
+            .unwrap()
+            .uncertainty = 0.5;
+        let mid = score_system(&w, empire, sys).unwrap();
+        assert!(mid.known);
+        assert!(
+            (mid.feed_score - 400.0).abs() < 1e-6,
+            "800 * (1-0.5) = 400, got {}",
+            mid.feed_score
+        );
+        w.contact
+            .ensure(EmpireId(empire.0))
+            .fog
+            .known_systems
+            .get_mut(&sys)
+            .unwrap()
+            .uncertainty = 0.0;
+        let certain = score_system(&w, empire, sys).unwrap();
+        assert!((certain.feed_score - 800.0).abs() < 1e-6);
+        assert!(certain.feed_score > mid.feed_score);
     }
 
     fn wilderness_unknown_not_infinite() {
