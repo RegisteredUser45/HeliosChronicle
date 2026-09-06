@@ -279,6 +279,14 @@ impl World {
             }
         }
 
+        // Phase D: life-support drains organics+volatiles (pops>0).
+        {
+            let body_ids: Vec<_> = self.ledger.bodies().map(|(id, _)| *id).collect();
+            for bid in body_ids {
+                crate::worlds::apply_life_support_drain(self, bid, dt);
+            }
+        }
+
         // Phase I: score known feed/fuse (no-op unless scoring_enabled).
         crate::minds::minds_tick_stub(self);
         self.recompute_outcome_hash();

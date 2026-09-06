@@ -56,6 +56,97 @@ pub fn compute_deficits(body: &BodyEntity, envelope: &SpeciesEnvelope) -> Defici
 /// Optional fuse-end / weapon layer burst (B/H write the same columns).
 
 /// Apply deficit mortality to pops for one tick (`dt` scales lightly). Returns new pops.
+
+/// Day-one life-support bill (DEF): when pops>0, need organics+volatiles from a system.
+/// Returns (organics_need, volatiles_need) for `dt` ticks; caller (C/matter) may consume.
+pub fn life_support_bill(body: &BodyEntity, envelope: &SpeciesEnvelope, dt: u64) -> (f64, f64) {
+    if body.pops <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let scale = body.pops.max(0.0) * dt as f64;
+    (
+        envelope.calories_need.max(0.0) * scale * 0.01,
+        envelope.water_need.max(0.0) * scale * 0.01,
+    )
+}
+
+/// Apply life-support by consuming `stock.organics` + `stock.volatiles` at the body's system.
+/// Shortfall adds mortality-style pop loss (no separate supply.* in catalog v4).
+pub fn apply_life_support_drain(
+    world: &mut crate::world::World,
+    body_id: crate::entity::EntityId,
+    dt: u64,
+) -> f64 {
+    let (system, pops, bill) = {
+        let Some(body) = world.ledger.get_body(body_id) else {
+            return 0.0;
+        };
+        if body.pops <= 0.0 {
+            return 0.0;
+        }
+        let bill = life_support_bill(body, &world.globals.envelope, dt);
+        (body.system, body.pops, bill)
+    };
+    let (need_org, need_vol) = bill;
+    // Consume from deposits/salvage via try_run style peek+consume helpers inline
+    let mut shortfall = 0.0;
+    for (stock, need) in [("stock.organics", need_org), ("stock.volatiles", need_vol)] {
+        if need <= 0.0 {
+            continue;
+        }
+        let got = consume_stock_at_system(world, system, stock, need);
+        shortfall += (need - got).max(0.0);
+    }
+    if shortfall > 0.0 {
+        if let Some(body) = world.ledger.get_body_mut(body_id) {
+            let loss = (shortfall * 0.1).min(body.pops);
+            body.pops = (body.pops - loss).max(0.0);
+            return loss;
+        }
+    }
+    let _ = pops;
+    0.0
+}
+
+fn consume_stock_at_system(
+    world: &mut crate::world::World,
+    system: crate::entity::EntityId,
+    stock: &str,
+    need: f64,
+) -> f64 {
+    let Some(sys) = world.ledger.get_mut(system) else {
+        return 0.0;
+    };
+    let mut left = need;
+    let mut got = 0.0;
+    for d in sys.deposits.iter_mut() {
+        if left <= 1e-12 {
+            break;
+        }
+        if d.stock_id != stock {
+            continue;
+        }
+        let take = d.quantity.min(left).max(0.0);
+        d.quantity -= take;
+        left -= take;
+        got += take;
+    }
+    sys.deposits.retain(|d| d.quantity > 1e-12);
+    if left > 1e-12 {
+        let have = sys.salvage_by_stock.get(stock).copied().unwrap_or(0.0);
+        let take = have.min(left).max(0.0);
+        if take > 0.0 {
+            let e = sys.salvage_by_stock.entry(stock.to_string()).or_insert(0.0);
+            *e = (*e - take).max(0.0);
+            if *e <= 1e-12 {
+                sys.salvage_by_stock.remove(stock);
+            }
+            got += take;
+        }
+    }
+    got
+}
+
 pub fn apply_pop_deficits(body: &mut BodyEntity, envelope: &SpeciesEnvelope, dt: u64) -> f64 {
     if body.pops <= 0.0 {
         return 0.0;
@@ -130,5 +221,31 @@ mod tests {
         apply_pop_deficits(&mut body, &SpeciesEnvelope::default(), 10);
         assert!(body.pops < before);
         assert!(body.pops > 0.0);
+    }
+
+    #[test]
+    fn life_support_bill_zero_when_no_pops() {
+        let body = BodyEntity::new(EntityId(9), EntityId(0));
+        assert_eq!(life_support_bill(&body, &SpeciesEnvelope::default(), 5), (0.0, 0.0));
+    }
+
+    #[test]
+    fn life_support_drain_consumes_stocks() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::world::World;
+        let mut w = World::new(31);
+        let system = *w.ledger.systems().next().unwrap().0;
+        let body_id = w.ledger.spawn_body(system);
+        {
+            let b = w.ledger.get_body_mut(body_id).unwrap();
+            b.pops = 50.0;
+        }
+        add_deposit(&mut w, system, Deposit::new("stock.organics", 100.0, 1.0, ExtractorKind::State)).unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.volatiles", 100.0, 1.0, ExtractorKind::State)).unwrap();
+        let before_org: f64 = w.ledger.get(system).unwrap().deposits.iter().filter(|d| d.stock_id == "stock.organics").map(|d| d.quantity).sum();
+        apply_life_support_drain(&mut w, body_id, 10);
+        let after_org: f64 = w.ledger.get(system).unwrap().deposits.iter().filter(|d| d.stock_id == "stock.organics").map(|d| d.quantity).sum();
+        assert!(after_org < before_org);
+        assert!(w.ledger.get_body(body_id).unwrap().pops > 0.0);
     }
 }
