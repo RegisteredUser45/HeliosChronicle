@@ -59,6 +59,17 @@ pub fn compute_deficits(body: &BodyEntity, envelope: &SpeciesEnvelope) -> Defici
 
 /// Day-one life-support bill (DEF): when pops>0, need organics+volatiles from a system.
 /// Returns (organics_need, volatiles_need) for `dt` ticks; caller (C/matter) may consume.
+
+/// Evacuate: clear pops. If `leave_automation`, ash automation may keep draining via C (L8).
+pub fn evacuate_body(body: &mut BodyEntity, leave_automation: bool) {
+    body.pops = 0.0;
+    if leave_automation {
+        body.automation_active = true;
+    } else {
+        body.automation_active = false;
+    }
+}
+
 pub fn life_support_bill(body: &BodyEntity, envelope: &SpeciesEnvelope, dt: u64) -> (f64, f64) {
     if body.pops <= 0.0 {
         return (0.0, 0.0);
@@ -247,5 +258,16 @@ mod tests {
         let after_org: f64 = w.ledger.get(system).unwrap().deposits.iter().filter(|d| d.stock_id == "stock.organics").map(|d| d.quantity).sum();
         assert!(after_org < before_org);
         assert!(w.ledger.get_body(body_id).unwrap().pops > 0.0);
+    }
+
+    #[test]
+    fn evacuate_clears_pops_may_leave_automation() {
+        let mut body = BodyEntity::new(EntityId(4), EntityId(0));
+        body.pops = 40.0;
+        evacuate_body(&mut body, true);
+        assert_eq!(body.pops, 0.0);
+        assert!(body.automation_active);
+        evacuate_body(&mut body, false);
+        assert!(!body.automation_active);
     }
 }

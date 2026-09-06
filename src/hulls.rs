@@ -283,6 +283,29 @@ pub fn tool_yard_at_system(
 }
 
 /// Load magazine ammo on a ship (catalog id → qty). Additive.
+
+/// Spend magazine ammo; errors if empty/unknown.
+pub fn spend_magazine(ship: &mut ShipInstance, ammo_id: &str, qty: f64) -> Result<f64, HullError> {
+    if ammo_id.is_empty() {
+        return Err(HullError::UnknownAmmo(ammo_id.into()));
+    }
+    if !qty.is_finite() || qty < 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    let have = ship.magazines.get(ammo_id).copied().unwrap_or(0.0);
+    if have + 1e-12 < qty {
+        return Err(HullError::InsufficientFuel);
+    }
+    let left = (have - qty).max(0.0);
+    if left <= 1e-12 {
+        ship.magazines.remove(ammo_id);
+        Ok(0.0)
+    } else {
+        ship.magazines.insert(ammo_id.to_string(), left);
+        Ok(left)
+    }
+}
+
 pub fn load_magazine(ship: &mut ShipInstance, ammo_id: &str, qty: f64) -> Result<f64, HullError> {
     if ammo_id.is_empty() {
         return Err(HullError::UnknownAmmo(ammo_id.into()));
@@ -568,5 +591,14 @@ mod tests {
             tool_yard_at_system(&mut w, empire, did2, system).unwrap_err(),
             HullError::YardMaterials
         ));
+    }
+
+    #[test]
+    fn spend_magazine_empty_errors() {
+        let d = make_design(EntityId(30), "g", vec!["module.engine_chem".into()]).unwrap();
+        let mut s = spawn_instance(EntityId(31), &d, 1.0);
+        load_magazine(&mut s, "ammo.kinetic", 5.0).unwrap();
+        assert!((spend_magazine(&mut s, "ammo.kinetic", 2.0).unwrap() - 3.0).abs() < 1e-9);
+        assert!(matches!(spend_magazine(&mut s, "ammo.kinetic", 9.0).unwrap_err(), HullError::InsufficientFuel));
     }
 }

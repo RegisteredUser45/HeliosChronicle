@@ -341,6 +341,47 @@ impl<'a> Operator<'a> {
             .map_err(|e| OperatorError::Other(e.to_string()))
     }
 
+
+    /// Evacuate a body (clear pops; optional ash automation).
+    pub fn evacuate_colony(
+        &mut self,
+        body_id: EntityId,
+        leave_automation: bool,
+    ) -> Result<(), OperatorError> {
+        let body = self
+            .world
+            .ledger_mut()
+            .get_body_mut(body_id)
+            .ok_or(OperatorError::NotFound(body_id))?;
+        crate::worlds::evacuate_body(body, leave_automation);
+        let tick = self.world.master_tick();
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: body_id,
+                field: "evacuate".into(),
+                old: String::new(),
+                new: format!("leave_automation={leave_automation}"),
+            },
+        );
+        Ok(())
+    }
+
+    /// Spend ship magazine ammo.
+    pub fn spend_ship_magazine(
+        &mut self,
+        ship_id: EntityId,
+        ammo_id: &str,
+        qty: f64,
+    ) -> Result<f64, OperatorError> {
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        crate::hulls::spend_magazine(ship, ammo_id, qty).map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Load ship magazine.
     pub fn load_ship_magazine(
         &mut self,
