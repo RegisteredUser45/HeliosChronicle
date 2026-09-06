@@ -179,3 +179,9 @@ Path: `data/cosmology_catalog.json` + `src/cosmology.rs`. **FREEZE: dotted `kind
 **D life-support v1:** drains `stock.organics` + `stock.volatiles` (no separate supply.* ids in v4).
 
 **E material_gates:** prefer recipe.* / facility.* / stock.* ids. Option (a) locked: recipe.yard_mk1 etc. BOM into facility.* / module.tankage.
+
+## Implementation status
+
+- D: `src/worlds.rs` + ledger bodies + `Globals.envelope` (on main via CoS).
+- E: `src/research.rs` stub tech book; unlocks on `EmpireEntity` progress fields.
+- F: `src/hulls.rs` `ShipDesign`/`ShipInstance`; single `fuel_tier`; `can_move` gate; stores on `World`.

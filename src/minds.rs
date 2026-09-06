@@ -1,13 +1,29 @@
-//! Phase I — Minds schema stubs: empire doctrine + Order entities on the Kernel ledger.
+//! Phase I — Minds: empire doctrine + Order entities + MapState scoring.
 //!
-//! Scoring and salt/punish emit stay behind feature flags until B map bits and H
-//! knowledge objects land. See `docs/phase-i-minds.md`.
+//! Salt/punish emit stay behind feature flags until H knowledge objects land.
+//! Scoring (this module) consumes Phase B `sky::map_state` bits only — no parallel map fields.
+//! See `docs/phase-i-minds.md`.
 
 use serde::{Deserialize, Serialize};
 
-use crate::entity::{EntityId, EntityLedger, OrderIntent, OrderSource};
+use crate::entity::{
+    EmpireEntity, EmpireId, EntityId, EntityLedger, OrderIntent, OrderSource, OrderStatus,
+    SystemEntity,
+};
 use crate::event::EventKind;
+use crate::sky::{self, MapState};
 use crate::world::World;
+
+/// Binding remainder at/above which Feed systems prefer PlantCity / PlantYard.
+pub const LONG_FEED: f64 = 400.0;
+/// Binding remainder below which Feed systems prefer StripMine / Fortify.
+pub const SHORT_FEED: f64 = 100.0;
+/// Known fuse remaining below this fraction of `globals.fuse_length_ticks` is urgent.
+const FUSE_URGENCY_FRAC: f64 = 0.20;
+/// Finite score for uncertain / unknown fuse — never +∞.
+const UNCERTAIN_FUSE_SCORE: f64 = 25.0;
+/// Penalty applied to feed_score when the system is not known to the empire.
+const UNKNOWN_FEED_PENALTY: f64 = 50.0;
 
 /// Feature flags for Phase I minds behavior (default both off).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +41,24 @@ impl Default for MindsFlags {
             salt_emit_enabled: false,
         }
     }
+}
+
+/// Per-system score against Phase B `MapState` for one empire's mind.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemScore {
+    pub system: EntityId,
+    pub map_state: MapState,
+    pub known: bool,
+    pub feed_score: f64,
+    pub fuse_score: f64,
+    pub total: f64,
+    pub suggested: Option<OrderIntent>,
+    /// Ledger binding remainder (sim truth).
+    pub binding_remainder: f64,
+    /// AI-known exact fuse (surveyed or fog.surveyed_fuse); ledger fuse may still be armed.
+    pub fuse_known: bool,
+    /// Known remaining < 20% of galaxy fuse length.
+    pub fuse_urgent: bool,
 }
 
 /// Clamp doctrine willingness / bias into `[0.0, 1.0]`.
@@ -100,32 +134,265 @@ pub fn try_emit_order(
     Ok(Some(id))
 }
 
-/// Stub capital re-score. No-op unless `scoring_enabled`.
-pub fn rescore_system(world: &mut World, _system_id: EntityId) {
+/// Knowledge / known-map heuristic for scoring.
+///
+/// A system is **known** to an empire if ANY of:
+/// - `sys.home_empire == Some(EmpireId(empire_id.0))` (own capital/home)
+/// - fog `known_systems` contains it
+/// - OR (bootstrap) empire has **no** contact registry entry yet — then treat
+///   non-wilderness-immortal systems as known for headless scoring tests.
+///   Once `contact.ensure` exists for that empire, require fog or home.
+pub fn is_system_known(world: &World, empire_id: EntityId, sys: &SystemEntity) -> bool {
+    let eid = EmpireId(empire_id.0);
+    if sys.home_empire == Some(eid) {
+        return true;
+    }
+    match world.contact.get(eid) {
+        Some(contact) => contact.fog.known_systems.contains_key(&sys.id),
+        // Bootstrap: no contact registry entry yet.
+        None => !sys.is_wilderness_immortal(),
+    }
+}
+
+/// Exact fuse number is AI-known only when the system is surveyed or fog marks surveyed_fuse.
+/// Ledger `fuse_end_tick` / `fuse_remaining` remain sim truth either way.
+pub fn fuse_is_known(world: &World, empire_id: EntityId, sys: &SystemEntity) -> bool {
+    if sys.surveyed {
+        return true;
+    }
+    let eid = EmpireId(empire_id.0);
+    world
+        .contact
+        .get(eid)
+        .and_then(|c| c.fog.known_systems.get(&sys.id))
+        .map(|e| e.surveyed_fuse)
+        .unwrap_or(false)
+}
+
+fn fuse_urgent_known(world: &World, sys: &SystemEntity, fuse_known: bool) -> bool {
+    if !fuse_known || !sys.depleted {
+        return false;
+    }
+    let fuse_len = world.globals.fuse_length_ticks().max(1);
+    let rem = sys
+        .fuse_remaining
+        .or_else(|| {
+            sys.fuse_end_tick
+                .map(|end| end.saturating_sub(world.master_tick))
+        })
+        .unwrap_or(fuse_len);
+    (rem as f64) < (fuse_len as f64) * FUSE_URGENCY_FRAC
+}
+
+/// Score one system for an empire against B `MapState`. Returns `None` if system missing.
+pub fn score_system(
+    world: &World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) -> Option<SystemScore> {
+    let sys = world.ledger.get(system_id)?;
+    let map_state = sky::map_state(sys);
+    let known = is_system_known(world, empire_id, sys);
+    let fuse_known = fuse_is_known(world, empire_id, sys);
+    let fuse_urgent = fuse_urgent_known(world, sys, fuse_known);
+    let binding_remainder = sys.binding_remainder;
+
+    // 1) Feed first, fuse second. Unknown feed gets a penalty; unknown fuse is finite.
+    let mut feed_score = match map_state {
+        MapState::Ended => 0.0,
+        MapState::WildernessUnknown => 30.0, // uncertain feed — not infinite
+        MapState::HomePaused => {
+            // Stable until flag drops: mid score from remainder, no panic.
+            100.0 + binding_remainder.min(LONG_FEED) * 0.25
+        }
+        MapState::Feed => binding_remainder.max(0.0),
+        MapState::DryFuse => binding_remainder.max(0.0).min(SHORT_FEED),
+    };
+    if !known {
+        feed_score = (feed_score - UNKNOWN_FEED_PENALTY).max(0.0);
+    }
+
+    let fuse_score = match map_state {
+        MapState::Ended | MapState::HomePaused => 0.0, // HomePaused: stable (countdown frozen)
+        MapState::WildernessUnknown => UNCERTAIN_FUSE_SCORE, // never +∞
+        MapState::Feed => 0.0,
+        MapState::DryFuse => {
+            if fuse_known {
+                let fuse_len = world.globals.fuse_length_ticks().max(1) as f64;
+                let rem = sys
+                    .fuse_remaining
+                    .or_else(|| {
+                        sys.fuse_end_tick
+                            .map(|end| end.saturating_sub(world.master_tick))
+                    })
+                    .unwrap_or(fuse_len as u64) as f64;
+                let urgency = (1.0 - (rem / fuse_len).clamp(0.0, 1.0)).clamp(0.0, 1.0);
+                50.0 + urgency * 200.0
+            } else {
+                // Depleted but fuse not known to AI — uncertain, not infinite.
+                UNCERTAIN_FUSE_SCORE
+            }
+        }
+    };
+
+    let total = feed_score + fuse_score;
+    let mut score = SystemScore {
+        system: system_id,
+        map_state,
+        known,
+        feed_score,
+        fuse_score,
+        total,
+        suggested: None,
+        binding_remainder,
+        fuse_known,
+        fuse_urgent,
+    };
+    if let Some(empire) = world.ledger.get_empire(empire_id) {
+        score.suggested = suggested_intent(&score, empire);
+    }
+    Some(score)
+}
+
+/// Map a score into a non-salt `OrderIntent` suggestion.
+pub fn suggested_intent(score: &SystemScore, empire: &EmpireEntity) -> Option<OrderIntent> {
+    match score.map_state {
+        MapState::Ended => Some(OrderIntent::Abandon),
+        MapState::WildernessUnknown => {
+            if score.known {
+                Some(OrderIntent::ClaimFeed)
+            } else {
+                Some(OrderIntent::ExpandSurvey)
+            }
+        }
+        MapState::HomePaused => {
+            // Stable until flag drops — do not panic-Evacuate solely because depleted.
+            if score.binding_remainder >= LONG_FEED {
+                Some(OrderIntent::PlantYard)
+            } else {
+                Some(OrderIntent::Fortify)
+            }
+        }
+        MapState::Feed => {
+            if score.binding_remainder >= LONG_FEED {
+                Some(OrderIntent::PlantCity)
+            } else if score.binding_remainder < SHORT_FEED {
+                Some(OrderIntent::StripMine)
+            } else {
+                Some(OrderIntent::PlantYard)
+            }
+        }
+        MapState::DryFuse => {
+            // Evacuate vs die-in-place on DryFuse / post-HomePaused-drop paths.
+            if empire.evacuate_vs_die_in_place >= 0.5 && score.fuse_known && score.fuse_urgent {
+                Some(OrderIntent::Evacuate)
+            } else if score.binding_remainder > 0.0 {
+                Some(OrderIntent::StripMine)
+            } else {
+                Some(OrderIntent::Fortify)
+            }
+        }
+    }
+}
+
+fn cancel_queued_ai_orders_targeting(
+    world: &mut World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) {
+    let tick = world.master_tick;
+    let to_cancel: Vec<EntityId> = world
+        .ledger
+        .orders()
+        .filter(|(_, o)| {
+            o.empire_id == empire_id
+                && o.source == OrderSource::Ai
+                && o.status == OrderStatus::Queued
+                && o.target_ref == Some(system_id)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    for oid in to_cancel {
+        let from = world
+            .ledger
+            .get_order(oid)
+            .map(|o| o.status.as_str().to_string())
+            .unwrap_or_else(|| "queued".into());
+        if let Some(o) = world.ledger.get_order_mut(oid) {
+            o.status = OrderStatus::Cancelled;
+            o.updated_tick = tick;
+        }
+        world.log.append(
+            tick,
+            EventKind::OrderStatusChanged {
+                order: oid,
+                from,
+                to: OrderStatus::Cancelled.as_str().to_string(),
+            },
+        );
+    }
+}
+
+fn empire_has_ai_order_targeting(world: &World, empire_id: EntityId, system_id: EntityId) -> bool {
+    world.ledger.orders().any(|(_, o)| {
+        o.empire_id == empire_id
+            && o.source == OrderSource::Ai
+            && matches!(o.status, OrderStatus::Queued | OrderStatus::Active)
+            && o.target_ref == Some(system_id)
+    })
+}
+
+fn empires_for_rescore(world: &World, system_id: EntityId) -> Vec<EntityId> {
+    if let Some(sys) = world.ledger.get(system_id) {
+        if let Some(he) = sys.home_empire {
+            let eid = EntityId(he.0);
+            if world.ledger.get_empire(eid).is_some() {
+                return vec![eid];
+            }
+        }
+    }
+    // Home unknown — all empires may care.
+    world.ledger.empires().map(|(id, _)| *id).collect()
+}
+
+/// Capital / system re-score. No-op unless `scoring_enabled`.
+///
+/// Cancels conflicting Queued+Ai orders targeting the system, then may emit one
+/// suggested non-salt Ai order per caring empire.
+pub fn rescore_system(world: &mut World, system_id: EntityId) {
     if !world.minds_flags.scoring_enabled {
         return;
     }
-    // Future: clear fuse-pause awareness (B map bit) and re-rank orders / standing.
-    let _ = world;
+    if world.ledger.get(system_id).is_none() {
+        return;
+    }
+    let empires = empires_for_rescore(world, system_id);
+    for empire_id in empires {
+        cancel_queued_ai_orders_targeting(world, empire_id, system_id);
+        let intent = score_system(world, empire_id, system_id)
+            .and_then(|s| s.suggested)
+            .filter(|i| !is_salt_family(*i));
+        if let Some(intent) = intent {
+            let _ = try_emit_order(
+                world,
+                empire_id,
+                intent,
+                Some(system_id),
+                OrderSource::Ai,
+            );
+        }
+    }
 }
 
-/// Same-tick hook after home-flag clear: append CapitalRescore, then stub rescore.
+/// Same-tick hook after home-flag clear: append CapitalRescore, then rescore.
 ///
-/// B will expose a fuse-pause bit; for now home_flag clear is the signal.
-/// When scoring is enabled, re-score runs before further AI orders.
+/// Prefer `sys.home_empire` for the event empire (copy fields first — no nested ledger borrows).
 pub fn on_home_flag_clear(world: &mut World, system_id: EntityId) {
-    let empire = world
+    let home_empire = world
         .ledger
         .get(system_id)
-        .and_then(|sys| {
-            // Stub: associate capital-ish systems with the first empire if any.
-            if sys.is_home_capital || !sys.home_flag {
-                world.ledger.empires().next().map(|(id, _)| *id)
-            } else {
-                None
-            }
-        })
-        .or_else(|| world.ledger.empires().next().map(|(id, _)| *id));
+        .and_then(|sys| sys.home_empire.map(|e| EntityId(e.0)));
+    let empire = home_empire.or_else(|| world.ledger.empires().next().map(|(id, _)| *id));
 
     let tick = world.master_tick;
     world.log.append(
@@ -138,12 +405,45 @@ pub fn on_home_flag_clear(world: &mut World, system_id: EntityId) {
     rescore_system(world, system_id);
 }
 
-/// Minds tick stub — no Expand/Plant emit while scoring is off.
+/// Minds tick — when scoring is enabled, emit at most one Ai order per empire per tick.
 pub fn minds_tick_stub(world: &mut World) {
     if !world.minds_flags.scoring_enabled {
         return;
     }
-    let _ = world;
+    let empire_ids: Vec<EntityId> = world.ledger.empires().map(|(id, _)| *id).collect();
+    for empire_id in empire_ids {
+        let system_ids: Vec<EntityId> = world.ledger.systems().map(|(id, _)| *id).collect();
+        let mut best: Option<SystemScore> = None;
+        for sid in system_ids {
+            let Some(score) = score_system(world, empire_id, sid) else {
+                continue;
+            };
+            if !score.known {
+                continue;
+            }
+            if empire_has_ai_order_targeting(world, empire_id, sid) {
+                continue;
+            }
+            let replace = match &best {
+                None => true,
+                Some(b) => score.total > b.total,
+            };
+            if replace {
+                best = Some(score);
+            }
+        }
+        if let Some(score) = best {
+            if let Some(intent) = score.suggested.filter(|i| !is_salt_family(*i)) {
+                let _ = try_emit_order(
+                    world,
+                    empire_id,
+                    intent,
+                    Some(score.system),
+                    OrderSource::Ai,
+                );
+            }
+        }
+    }
 }
 
 /// Convenience: spawn an empire from galaxy doctrine defaults and log it.
@@ -193,6 +493,7 @@ mod minds_tests {
     use super::*;
     use crate::entity::{EmpireEntity, OrderStatus};
     use crate::globals::Globals;
+    use crate::operator::Operator;
 
     #[test]
     fn empire_defaults_match_globals() {
@@ -290,5 +591,225 @@ mod minds_tests {
             &e.kind,
             EventKind::CapitalRescore { system, .. } if *system == sys
         )));
+    }
+
+    #[test]
+    fn scoring_disabled_still_noop() {
+        let mut w = World::new(50);
+        assert!(!w.minds_flags.scoring_enabled);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 800.0;
+            s.depleted = false;
+        }
+        let before = w.ledger.orders_len();
+        minds_tick_stub(&mut w);
+        rescore_system(&mut w, sys);
+        assert_eq!(w.ledger.orders_len(), before);
+        assert!(!w.ledger.orders().any(|(_, o)| {
+            o.source == OrderSource::Ai && o.empire_id == empire
+        }));
+    }
+
+    #[test]
+    fn score_feed_prefers_plant() {
+        let mut w = World::new(51);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 800.0;
+            s.depleted = false;
+            s.fuse_end_tick = None;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+        }
+        assert_eq!(sky::map_state(w.ledger.get(sys).unwrap()), MapState::Feed);
+        let score = score_system(&w, empire, sys).expect("score");
+        assert!(score.known);
+        assert!(matches!(
+            score.suggested,
+            Some(OrderIntent::PlantCity) | Some(OrderIntent::PlantYard)
+        ));
+    }
+
+    #[test]
+    fn score_dry_fuse_not_plant() {
+        let mut w = World::new(52);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let fuse_len = w.globals.fuse_length_ticks();
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 10.0;
+            s.depleted = true;
+            s.fuse_end_tick = Some(w.master_tick + fuse_len);
+            s.fuse_remaining = Some(fuse_len);
+            s.fuse_paused = false;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.home_flag = false;
+            s.is_home_capital = false;
+        }
+        assert_eq!(sky::map_state(w.ledger.get(sys).unwrap()), MapState::DryFuse);
+        let score = score_system(&w, empire, sys).expect("score");
+        assert!(!matches!(
+            score.suggested,
+            Some(OrderIntent::PlantCity) | Some(OrderIntent::PlantYard)
+        ));
+        assert!(matches!(
+            score.suggested,
+            Some(OrderIntent::StripMine)
+                | Some(OrderIntent::Fortify)
+                | Some(OrderIntent::Evacuate)
+        ));
+    }
+
+    #[test]
+    fn score_home_paused_stable() {
+        let mut w = World::new(53);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let fuse_len = w.globals.fuse_length_ticks();
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 5.0;
+            s.depleted = true;
+            s.fuse_end_tick = Some(w.master_tick + 10); // very short if it were live
+            s.fuse_remaining = Some(10);
+            s.fuse_paused = true;
+            s.ended = false;
+            s.is_home_capital = true;
+            s.home_flag = true;
+            s.home_empire = Some(EmpireId(empire.0));
+            s.surveyed = true;
+            let _ = fuse_len;
+        }
+        assert_eq!(
+            sky::map_state(w.ledger.get(sys).unwrap()),
+            MapState::HomePaused
+        );
+        let score = score_system(&w, empire, sys).expect("score");
+        assert_ne!(score.suggested, Some(OrderIntent::Evacuate));
+        assert!(matches!(
+            score.suggested,
+            Some(OrderIntent::Fortify) | Some(OrderIntent::PlantYard) | Some(OrderIntent::PlantCity)
+        ));
+    }
+
+    #[test]
+    fn capital_rescore_emits_when_scoring_on() {
+        let mut w = World::new(54);
+        w.minds_flags.scoring_enabled = true;
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 700.0;
+            s.depleted = false;
+            s.is_home_capital = true;
+            s.home_flag = true;
+            s.home_empire = Some(EmpireId(empire.0));
+            s.surveyed = true;
+        }
+        // Conflicting queued AI order targeting the capital.
+        let old = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::ExpandSurvey,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("queued ai");
+        let tick = w.master_tick();
+        {
+            let mut op = Operator::new(&mut w);
+            op.set_field(sys, "home_flag", "false").unwrap();
+        }
+        assert_eq!(w.master_tick(), tick);
+        assert!(w.log.events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::CapitalRescore { system, empire: e } if *system == sys && *e == Some(empire)
+        )));
+        let cancelled = w.ledger.get_order(old).unwrap().status == OrderStatus::Cancelled;
+        assert!(cancelled, "conflicting Queued Ai order should cancel on rescore");
+        assert!(w.log.events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::OrderStatusChanged { order, to, .. } if *order == old && to == "cancelled"
+        )));
+        // New suggested Ai order (non-salt) may be emitted.
+        let ai_intents: Vec<_> = w
+            .ledger
+            .orders()
+            .filter(|(_, o)| {
+                o.source == OrderSource::Ai
+                    && o.status == OrderStatus::Queued
+                    && o.target_ref == Some(sys)
+            })
+            .map(|(_, o)| o.intent)
+            .collect();
+        assert!(
+            !ai_intents.is_empty(),
+            "rescore should emit a suggested non-salt Ai order"
+        );
+        assert!(ai_intents.iter().all(|i| !is_salt_family(*i)));
+    }
+
+    #[test]
+    fn salt_still_blocked_when_scoring_enabled() {
+        let mut w = World::new(55);
+        w.minds_flags.scoring_enabled = true;
+        assert!(!w.minds_flags.salt_emit_enabled);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let r = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::SaltWorld,
+            None,
+            OrderSource::Ai,
+        )
+        .unwrap();
+        assert!(r.is_none());
+        // Scoring suggestions must never be salt family.
+        let sys = *w.ledger.systems().next().unwrap().0;
+        if let Some(score) = score_system(&w, empire, sys) {
+            if let Some(intent) = score.suggested {
+                assert!(!is_salt_family(intent));
+            }
+        }
+        minds_tick_stub(&mut w);
+        assert!(!w.ledger.orders().any(|(_, o)| is_salt_family(o.intent)));
+    }
+
+    #[test]
+    fn wilderness_unknown_not_infinite() {
+        let mut w = World::new(56);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = w.ledger.spawn_wilderness_system();
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 9999.0;
+            // immortal wilderness → WildernessUnknown
+            assert!(s.is_wilderness_immortal());
+        }
+        assert_eq!(
+            sky::map_state(w.ledger.get(sys).unwrap()),
+            MapState::WildernessUnknown
+        );
+        // Ensure contact so bootstrap does not auto-know wilderness.
+        w.contact.ensure(EmpireId(empire.0));
+        let score = score_system(&w, empire, sys).expect("score");
+        assert!(!score.fuse_score.is_infinite());
+        assert!(score.fuse_score < 1_000.0);
+        assert!(matches!(
+            score.suggested,
+            Some(OrderIntent::ExpandSurvey) | Some(OrderIntent::ClaimFeed)
+        ));
     }
 }

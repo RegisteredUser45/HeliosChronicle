@@ -1,5 +1,6 @@
 //! World state: master clock, seed/RNG, ledger, chronicle, LOD, G/P stores.
 
+use std::collections::BTreeMap;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -8,6 +9,7 @@ use crate::contact::EmpireContactStore;
 use crate::entity::{EntityId, EntityLedger};
 use crate::event::{EventKind, EventLog};
 use crate::globals::Globals;
+use crate::hulls::{ShipDesign, ShipInstance};
 use crate::knowledge::KnowledgeStore;
 use crate::lod::LodMode;
 use crate::sky;
@@ -37,6 +39,12 @@ pub struct World {
     /// Phase I minds feature flags (default both off).
     #[serde(default)]
     pub minds_flags: MindsFlags,
+    /// Phase F design book (instances ref these).
+    #[serde(default)]
+    pub ship_designs: BTreeMap<EntityId, ShipDesign>,
+    /// Phase F ship instances.
+    #[serde(default)]
+    pub ships: BTreeMap<EntityId, ShipInstance>,
     /// Fingerprint of ledger + tick for cheap determinism checks.
     pub outcome_hash: u64,
 }
@@ -60,6 +68,8 @@ impl World {
             contact: EmpireContactStore::new(),
             standing: StandingStore::new(),
             minds_flags: MindsFlags::default(),
+            ship_designs: BTreeMap::new(),
+            ships: BTreeMap::new(),
             outcome_hash: 0,
         };
         world.log.append(0, EventKind::WorldCreated { seed });
@@ -246,6 +256,8 @@ impl World {
                 lod: format!("{:?}", lod),
             },
         );
+        // Phase I: score known feed/fuse (no-op unless scoring_enabled).
+        crate::minds::minds_tick_stub(self);
         self.recompute_outcome_hash();
     }
 
@@ -287,6 +299,8 @@ impl World {
         self.knowledge.len().hash(&mut h);
         self.standing.fingerprint().hash(&mut h);
         self.contact.empire_count().hash(&mut h);
+        self.ship_designs.len().hash(&mut h);
+        self.ships.len().hash(&mut h);
         self.outcome_hash = h.finish();
     }
 

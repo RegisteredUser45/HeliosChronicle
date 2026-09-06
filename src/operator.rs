@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::entity::{EntityId, OrderIntent, OrderSource, SystemEntity};
 use crate::event::EventKind;
 use crate::lod::LodHint;
+use crate::matter::{self, Deposit, ExtractorKind};
 use crate::minds::{self, set_empire_doctrine_field};
 use crate::world::World;
 
@@ -335,6 +336,59 @@ impl<'a> Operator<'a> {
             },
         );
         Ok(())
+    }
+
+    /// Phase C: add a deposit (stock id, qty, accessibility, extractor) and reaggregate.
+    pub fn add_deposit(
+        &mut self,
+        system: EntityId,
+        stock_id: &str,
+        quantity: f64,
+        accessibility: f64,
+        extractor: &str,
+    ) -> Result<(), OperatorError> {
+        let kind = ExtractorKind::parse(extractor).ok_or_else(|| OperatorError::InvalidValue {
+            field: "extractor".into(),
+            reason: format!("expected state|civilian|foreign|abandoned_auto, got '{extractor}'"),
+        })?;
+        matter::add_deposit(
+            self.world,
+            system,
+            Deposit::new(stock_id, quantity, accessibility, kind),
+        )
+        .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Phase C: Lock-8 extract drain by extractor kind; triggers sky depletion check.
+    pub fn extract(
+        &mut self,
+        system: EntityId,
+        extractor: &str,
+        amount: f64,
+    ) -> Result<f64, OperatorError> {
+        let kind = ExtractorKind::parse(extractor).ok_or_else(|| OperatorError::InvalidValue {
+            field: "extractor".into(),
+            reason: format!("expected state|civilian|foreign|abandoned_auto, got '{extractor}'"),
+        })?;
+        let drained = matter::extract(self.world, system, kind, amount)
+            .map_err(|e| OperatorError::Other(e.to_string()))?;
+        let tick = self.world.master_tick();
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: system,
+                field: format!("extract:{}", kind.as_str()),
+                old: String::new(),
+                new: drained.to_string(),
+            },
+        );
+        Ok(drained)
+    }
+
+    /// Phase C: salvage feed-pipe (no vein refill).
+    pub fn salvage_feed(&mut self, system: EntityId, amount: f64) -> Result<f64, OperatorError> {
+        matter::salvage_into_feed(self.world, system, amount)
+            .map_err(|e| OperatorError::Other(e.to_string()))
     }
 
     pub fn arm_fuse(&mut self, id: EntityId, end_tick: u64) -> Result<(), OperatorError> {

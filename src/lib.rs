@@ -2,7 +2,8 @@
 //!
 //! Tick loop, deterministic seed, event log, save/load, entity ledger,
 //! operator R/W, stub LOD, knowledge objects, contact fog, standing,
-//! Phase I doctrine/orders, and Phase B sky helpers. H waits on D/F.
+//! Phase I doctrine/orders, Phase B sky, Phase D worlds, Phase E/F schema stubs,
+//! Phase H planetary layer-write path (hull damage waits on F).
 
 pub mod contact;
 pub mod cosmology;
@@ -11,6 +12,7 @@ pub mod event;
 pub mod globals;
 pub mod knowledge;
 pub mod lod;
+pub mod matter;
 pub mod minds;
 pub mod operator;
 pub mod politics;
@@ -18,6 +20,9 @@ pub mod save;
 pub mod sky;
 pub mod world;
 pub mod worlds;
+pub mod violence;
+pub mod research;
+pub mod hulls;
 
 pub use contact::{
     first_contact, push_fine_hot, EmpireContact, EmpireContactStore, FogState, SystemFogEntry,
@@ -34,6 +39,11 @@ pub use knowledge::{
     KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation,
 };
 pub use lod::{LodHint, LodMode};
+pub use matter::{
+    add_deposit, compute_binding_remainder, deposit_counts_as_binding, extract,
+    extract_abandoned_auto, extract_civilian, extract_foreign, extract_state,
+    reaggregate_and_check, salvage_into_feed, Deposit, ExtractorKind, MatterError,
+};
 pub use minds::{clamp_doctrine, MindsFlags};
 pub use operator::{Operator, OperatorError};
 pub use politics::{
@@ -43,6 +53,13 @@ pub use politics::{
 pub use save::{load_world, save_world, SaveError};
 pub use world::World;
 pub use worlds::{apply_layer_burst, compute_deficits, DeficitReport};
+pub use violence::{
+    apply_hull_damage_stub, salt_layer_delta, salt_world, strike_layers, StrikeKind,
+    ViolenceError, ViolenceOutcome, KO_SEVERITY_THRESHOLD, SALT_BIOSPHERE_DELTA,
+    SALT_RADIATION_DELTA, SALT_SEVERITY, SALT_TEMPERATURE_DELTA, SALT_TOXINS_DELTA,
+};
+pub use research::{gates_ref_catalog, salvage_unlock_segment, segment_rp_cost, stub_tech_book, unlock_segment, Lab, TechCategory, TechLine, TechSegment};
+pub use hulls::{can_move, derive_fuel_tier, make_design, spawn_instance, HullError, ShipDesign, ShipInstance};
 pub use globals::{Band, SpeciesEnvelope};
 
 /// Run two worlds from the same seed for `ticks` and return whether outcomes match.

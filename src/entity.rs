@@ -3,7 +3,7 @@
 //! Systems (Phase B sky) + empires/orders (Phase I minds) share one id space.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::globals::Globals;
 use crate::lod::LodHint;
@@ -84,6 +84,12 @@ pub struct SystemEntity {
     pub jump_links: Vec<EntityId>,
     #[serde(default)]
     pub binding_stocks: BTreeMap<String, f64>,
+    /// Phase C deposits (C owns; remainder aggregated from binding deposits).
+    #[serde(default)]
+    pub deposits: Vec<crate::matter::Deposit>,
+    /// Salvage / recycling feed-pipe stock (no vein refill).
+    #[serde(default)]
+    pub salvage_stock: f64,
 }
 
 impl Default for SystemEntity {
@@ -115,6 +121,8 @@ impl SystemEntity {
             y: 0.0,
             jump_links: Vec::new(),
             binding_stocks: BTreeMap::new(),
+            deposits: Vec::new(),
+            salvage_stock: 0.0,
         }
     }
 
@@ -160,6 +168,15 @@ pub struct EmpireEntity {
     pub salt_willingness: f64,
     pub punishment_willingness: f64,
     pub evacuate_vs_die_in_place: f64,
+    /// Phase E: researched segment ids (empire progress; never mutates cosmology).
+    #[serde(default)]
+    pub unlocked_segments: BTreeSet<String>,
+    /// Phase E: unlocked catalog module/facility/recipe ids.
+    #[serde(default)]
+    pub unlocked_catalog_ids: BTreeSet<String>,
+    /// Salvage jumps with incomplete stats.
+    #[serde(default)]
+    pub incomplete_stat_segments: BTreeSet<String>,
 }
 
 impl EmpireEntity {
@@ -170,6 +187,9 @@ impl EmpireEntity {
             salt_willingness: clamp01(globals.salt_willingness),
             punishment_willingness: clamp01(globals.punishment_willingness),
             evacuate_vs_die_in_place: clamp01(globals.evacuate_vs_die_in_place),
+            unlocked_segments: BTreeSet::new(),
+            unlocked_catalog_ids: BTreeSet::new(),
+            incomplete_stat_segments: BTreeSet::new(),
         }
     }
 }

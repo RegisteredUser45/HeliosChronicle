@@ -118,7 +118,7 @@ pub enum EventKind {
         ko: EntityId,
         by: EmpireId,
     },
-    // --- Phase H: Violence stubs (types only; no planetary layer writes) ---
+    // --- Phase H: Violence (layer writes via violence::strike_layers / salt_world) ---
     OrbitalStrike {
         actor: EmpireId,
         victim: EmpireId,

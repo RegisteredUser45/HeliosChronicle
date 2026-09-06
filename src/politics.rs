@@ -179,24 +179,25 @@ fn apply_witness_from_ko(
     bump_standing(world, empire, actor, scaled, reason_seq);
 }
 
-/// Emit a Salt cruelty event and apply victim standing (H stub helper).
+/// Emit a Salt cruelty event and apply victim standing.
+///
+/// When a body exists on `system`, delegates to [`crate::violence::salt_world`]
+/// for high-rate layer writes + KO emission (Phase H). Otherwise keeps the
+/// system-only path (Salt event + standing + fine-hot, no layer write).
 pub fn emit_salt(
     world: &mut World,
     actor: EmpireId,
     victim: EmpireId,
     system: crate::entity::EntityId,
 ) {
-    let tick = world.master_tick();
-    crate::contact::push_fine_hot(world, system);
-    let ev = world.log.append(
-        tick,
-        EventKind::Salt {
-            actor,
-            victim,
-            system,
-        },
-    );
-    let chronicle = ev.clone();
-    apply_event_for_standing(world, &chronicle);
-    world.recompute_outcome_hash();
+    let body_id = world
+        .ledger
+        .bodies_for_system(system)
+        .next()
+        .map(|(id, _)| *id);
+    if let Some(body_id) = body_id {
+        let _ = crate::violence::salt_world(world, actor, victim, system, body_id);
+        return;
+    }
+    crate::violence::salt_system_only(world, actor, victim, system);
 }
