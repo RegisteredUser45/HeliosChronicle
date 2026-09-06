@@ -259,6 +259,55 @@ pub fn set_home_capital(world: &mut World, empire: EmpireId, system: EntityId) -
 }
 
 /// Count map states (for CLI).
+
+/// Bidirectional jump link (hidden-until-surveyed is Contact/G; B stores topology).
+pub fn link_jump(world: &mut World, a: EntityId, b: EntityId) -> Result<(), String> {
+    if a == b {
+        return Err("cannot link a system to itself".into());
+    }
+    if world.ledger.get(a).is_none() {
+        return Err(format!("system {a} not found"));
+    }
+    if world.ledger.get(b).is_none() {
+        return Err(format!("system {b} not found"));
+    }
+    {
+        let sys = world.ledger.get_mut(a).unwrap();
+        if !sys.jump_links.contains(&b) {
+            sys.jump_links.push(b);
+        }
+    }
+    {
+        let sys = world.ledger.get_mut(b).unwrap();
+        if !sys.jump_links.contains(&a) {
+            sys.jump_links.push(a);
+        }
+    }
+    Ok(())
+}
+
+/// Euclidean map distance between system positions (sky stub coordinates).
+pub fn system_distance(world: &World, a: EntityId, b: EntityId) -> Option<f64> {
+    let sa = world.ledger.get(a)?;
+    let sb = world.ledger.get(b)?;
+    let dx = sa.x - sb.x;
+    let dy = sa.y - sb.y;
+    Some((dx * dx + dy * dy).sqrt())
+}
+
+/// Transfer ETA in master ticks: jump link ⇒ 1 tick; else ceil(distance) (min 1).
+pub fn transfer_eta_ticks(world: &World, from: EntityId, to: EntityId) -> Option<u64> {
+    if from == to {
+        return Some(0);
+    }
+    let from_sys = world.ledger.get(from)?;
+    if from_sys.jump_links.contains(&to) {
+        return Some(1);
+    }
+    let dist = system_distance(world, from, to)?;
+    Some(dist.ceil().max(1.0) as u64)
+}
+
 pub fn map_state_counts(world: &World) -> [(MapState, usize); 5] {
     let mut feed = 0;
     let mut dry = 0;
@@ -466,4 +515,23 @@ mod sky_tests {
         assert!(w.ledger.get(id).unwrap().ended);
         assert!(w.ledger.get(id).unwrap().remnant_harvest.is_some());
     }
+
+    #[test]
+    fn jump_link_and_transfer_eta() {
+        let mut w = World::new(501);
+        let a = spawn_system_with_catalog(&mut w, false);
+        let b = spawn_system_with_catalog(&mut w, false);
+        // place far apart
+        w.ledger.get_mut(a).unwrap().x = 0.0;
+        w.ledger.get_mut(a).unwrap().y = 0.0;
+        w.ledger.get_mut(b).unwrap().x = 30.0;
+        w.ledger.get_mut(b).unwrap().y = 40.0; // dist 50
+        let eta_coast = transfer_eta_ticks(&w, a, b).unwrap();
+        assert_eq!(eta_coast, 50);
+        link_jump(&mut w, a, b).unwrap();
+        assert!(w.ledger.get(a).unwrap().jump_links.contains(&b));
+        assert!(w.ledger.get(b).unwrap().jump_links.contains(&a));
+        assert_eq!(transfer_eta_ticks(&w, a, b).unwrap(), 1);
+    }
+
 }
