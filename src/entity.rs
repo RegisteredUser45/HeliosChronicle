@@ -90,6 +90,15 @@ pub struct SystemEntity {
     /// Salvage / recycling feed-pipe stock (no vein refill).
     #[serde(default)]
     pub salvage_stock: f64,
+    /// Optional per-system civilian line rates (quantity/tick); empty → globals rate.
+    #[serde(default)]
+    pub civilian_lines: Vec<crate::matter::CivilianLine>,
+    /// Chain/recipe outputs (not binding veins).
+    #[serde(default)]
+    pub outputs_stock: std::collections::BTreeMap<String, f64>,
+    /// Salvage by catalog stock id (does not affect binding_remainder).
+    #[serde(default)]
+    pub salvage_by_stock: std::collections::BTreeMap<String, f64>,
 }
 
 impl Default for SystemEntity {
@@ -123,6 +132,9 @@ impl SystemEntity {
             binding_stocks: BTreeMap::new(),
             deposits: Vec::new(),
             salvage_stock: 0.0,
+            civilian_lines: Vec::new(),
+            outputs_stock: std::collections::BTreeMap::new(),
+            salvage_by_stock: std::collections::BTreeMap::new(),
         }
     }
 

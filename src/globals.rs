@@ -71,6 +71,12 @@ pub struct Globals {
     /// Binding floor for C (mirrors catalog default; operator-editable).
     #[serde(default = "default_binding_floor")]
     pub binding_floor: f64,
+    /// Quantity drained per master-tick by civilian extractors (Lock 8).
+    #[serde(default = "default_civilian_extract_rate")]
+    pub civilian_extract_rate: f64,
+    /// Quantity drained per master-tick by abandoned automation (Lock 8).
+    #[serde(default = "default_abandoned_auto_extract_rate")]
+    pub abandoned_auto_extract_rate: f64,
     /// Lock 4: capital home systems pause fuse while flag held.
     #[serde(default = "default_true")]
     pub home_pause_enabled: bool,
@@ -105,6 +111,14 @@ fn default_dry_threshold() -> f64 {
 fn default_binding_floor() -> f64 {
     1.0
 }
+
+fn default_civilian_extract_rate() -> f64 {
+    1.0
+}
+
+fn default_abandoned_auto_extract_rate() -> f64 {
+    1.0
+}
 fn default_true() -> bool {
     true
 }
@@ -136,6 +150,8 @@ impl Default for Globals {
             } else {
                 default_binding_floor()
             },
+            civilian_extract_rate: default_civilian_extract_rate(),
+            abandoned_auto_extract_rate: default_abandoned_auto_extract_rate(),
             home_pause_enabled: true,
             live_system_band: default_live_band(),
             spawn_weights: catalog.spawn_weights(),

@@ -13,6 +13,7 @@ use crate::hulls::{ShipDesign, ShipInstance};
 use crate::research::Lab;
 use crate::knowledge::KnowledgeStore;
 use crate::lod::LodMode;
+use crate::matter;
 use crate::sky;
 use crate::minds::MindsFlags;
 use crate::politics::StandingStore;
@@ -191,6 +192,10 @@ impl World {
         let dt = self.current_dt();
         let from = self.master_tick;
         let to = from.saturating_add(dt);
+
+        // C: Lock-8 civilian + abandoned-auto drains.
+        matter::tick_civilian_extractors(self, dt);
+        matter::tick_abandoned_automation(self, dt);
 
         // B: slide absolute fuse_end_tick while capital home-paused (freeze countdown).
         sky::apply_fuse_pause_slide(self, dt);

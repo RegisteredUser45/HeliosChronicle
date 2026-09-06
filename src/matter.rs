@@ -263,6 +263,227 @@ pub fn salvage_into_feed(world: &mut World, system: EntityId, amount: f64) -> Re
     Ok(sys.salvage_stock)
 }
 
+
+/// Optional per-system civilian extraction line (quantity per master-tick).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CivilianLine {
+    /// Quantity drained per master-tick while this line is active.
+    pub rate: f64,
+}
+
+impl CivilianLine {
+    pub fn new(rate: f64) -> Self {
+        Self { rate: rate.max(0.0) }
+    }
+}
+
+/// Drain civilian deposits for one LOD step (`dt` master ticks).
+///
+/// Per system: sum of `civilian_lines` rates, or `globals.civilian_extract_rate`
+/// if no lines are configured but Civilian deposits exist.
+pub fn tick_civilian_extractors(world: &mut World, dt: u64) {
+    if dt == 0 {
+        return;
+    }
+    let default_rate = world.globals.civilian_extract_rate;
+    let systems: Vec<EntityId> = world.ledger.systems().map(|(id, _)| *id).collect();
+    for id in systems {
+        let rate = {
+            let Some(sys) = world.ledger.get(id) else {
+                continue;
+            };
+            if sys.ended {
+                0.0
+            } else {
+                let has = sys
+                    .deposits
+                    .iter()
+                    .any(|d| d.extractor == ExtractorKind::Civilian && d.quantity > 0.0);
+                let line_rate: f64 = sys.civilian_lines.iter().map(|l| l.rate.max(0.0)).sum();
+                if line_rate > 0.0 {
+                    line_rate
+                } else if has {
+                    default_rate
+                } else {
+                    0.0
+                }
+            }
+        };
+        if rate <= 0.0 {
+            continue;
+        }
+        let _ = extract_civilian(world, id, rate * dt as f64);
+    }
+}
+
+/// Drain abandoned-auto deposits when any body on the system has automation_active.
+pub fn tick_abandoned_automation(world: &mut World, dt: u64) {
+    if dt == 0 {
+        return;
+    }
+    let rate = world.globals.abandoned_auto_extract_rate;
+    if rate <= 0.0 {
+        return;
+    }
+    let systems: Vec<EntityId> = world.ledger.systems().map(|(id, _)| *id).collect();
+    for id in systems {
+        let active = world
+            .ledger
+            .bodies()
+            .any(|(_, b)| b.system == id && b.automation_active);
+        if !active {
+            continue;
+        }
+        let has = world
+            .ledger
+            .get(id)
+            .map(|s| {
+                s.deposits
+                    .iter()
+                    .any(|d| d.extractor == ExtractorKind::AbandonedAuto && d.quantity > 0.0)
+            })
+            .unwrap_or(false);
+        if !has {
+            continue;
+        }
+        let _ = extract_abandoned_auto(world, id, rate * dt as f64);
+    }
+}
+
+/// Salvage feed with optional per-stock bookkeeping (does not affect binding_remainder / veins).
+pub fn salvage_into_feed_stock(
+    world: &mut World,
+    system: EntityId,
+    stock_id: Option<&str>,
+    amount: f64,
+) -> Result<f64, MatterError> {
+    if !amount.is_finite() || amount < 0.0 {
+        return Err(MatterError::InvalidAmount);
+    }
+    let total = salvage_into_feed(world, system, amount)?;
+    if let Some(sid) = stock_id {
+        let sys = world
+            .ledger
+            .get_mut(system)
+            .ok_or(MatterError::SystemNotFound(system))?;
+        *sys.salvage_by_stock.entry(sid.to_string()).or_insert(0.0) += amount;
+    }
+    Ok(total)
+}
+
+fn consume_from_deposits(sys: &mut SystemEntity, stock: &str, need: f64) -> f64 {
+    let mut left = need;
+    let mut got = 0.0;
+    for d in sys.deposits.iter_mut() {
+        if left <= 0.0 {
+            break;
+        }
+        if d.stock_id != stock {
+            continue;
+        }
+        let take = d.quantity.min(left).max(0.0);
+        d.quantity -= take;
+        left -= take;
+        got += take;
+    }
+    sys.deposits.retain(|d| d.quantity > 1e-12);
+    got
+}
+
+fn consume_from_salvage_by_stock(sys: &mut SystemEntity, stock: &str, need: f64) -> f64 {
+    let entry = sys.salvage_by_stock.entry(stock.to_string()).or_insert(0.0);
+    let take = (*entry).min(need).max(0.0);
+    *entry -= take;
+    if *entry <= 1e-12 {
+        sys.salvage_by_stock.remove(stock);
+    }
+    sys.salvage_stock = (sys.salvage_stock - take).max(0.0);
+    take
+}
+
+/// Run a cosmology catalog recipe BOM at a system (C chain stub).
+///
+/// Consumes BOM from deposits first, then salvage_by_stock. Does **not** refill
+/// veins. Outputs go to `outputs_stock`. Day-one: no E unlock gate.
+pub fn try_run_recipe(
+    world: &mut World,
+    system: EntityId,
+    recipe_id: &str,
+) -> Result<bool, MatterError> {
+    let cat = embedded_catalog();
+    let Some(recipe) = cat.recipes.iter().find(|r| r.id == recipe_id) else {
+        return Err(MatterError::UnknownStock(recipe_id.to_string()));
+    };
+
+    let mut needs: Vec<(String, f64)> = Vec::new();
+    for entry in &recipe.bom {
+        let qty = if entry.qty > 0.0 { entry.qty } else { 1.0 };
+        if let Some(stock) = &entry.stock {
+            needs.push((stock.clone(), qty));
+        } else if let Some(rare) = &entry.rare {
+            needs.push((rare.clone(), qty));
+        }
+    }
+
+    {
+        let sys = world
+            .ledger
+            .get(system)
+            .ok_or(MatterError::SystemNotFound(system))?;
+        for (stock, need) in &needs {
+            let in_dep: f64 = sys
+                .deposits
+                .iter()
+                .filter(|d| d.stock_id == *stock)
+                .map(|d| d.quantity)
+                .sum();
+            let in_sal = sys.salvage_by_stock.get(stock).copied().unwrap_or(0.0);
+            if in_dep + in_sal + 1e-12 < *need {
+                return Ok(false);
+            }
+        }
+    }
+
+    {
+        let sys = world
+            .ledger
+            .get_mut(system)
+            .ok_or(MatterError::SystemNotFound(system))?;
+        for (stock, need) in &needs {
+            let mut left = *need;
+            let got = consume_from_deposits(sys, stock, left);
+            left -= got;
+            if left > 1e-12 {
+                let _ = consume_from_salvage_by_stock(sys, stock, left);
+            }
+        }
+    }
+    reaggregate_and_check(world, system)?;
+
+    {
+        let sys = world
+            .ledger
+            .get_mut(system)
+            .ok_or(MatterError::SystemNotFound(system))?;
+        for entry in &recipe.outputs {
+            let qty = if entry.qty > 0.0 { entry.qty } else { 1.0 };
+            let key = entry
+                .fuel
+                .clone()
+                .or_else(|| entry.module.clone())
+                .or_else(|| entry.stock.clone())
+                .unwrap_or_else(|| format!("{recipe_id}:output"));
+            *sys.outputs_stock.entry(key).or_insert(0.0) += qty;
+        }
+        if recipe.outputs.is_empty() {
+            *sys.outputs_stock
+                .entry(format!("{recipe_id}:done"))
+                .or_insert(0.0) += 1.0;
+        }
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod matter_tests {
     use super::*;
@@ -488,5 +709,127 @@ mod matter_tests {
         )
         .unwrap(); // extractable 5.0 >= 1.0
         assert!((w.ledger.get(id).unwrap().binding_remainder - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn civilian_tick_drains_without_operator_extract() {
+        let mut w = World::new(301);
+        let id = claimed_system(&mut w);
+        add_deposit(
+            &mut w,
+            id,
+            Deposit::new("stock.volatiles", 50.0, 1.0, ExtractorKind::Civilian),
+        )
+        .unwrap();
+        w.globals.civilian_extract_rate = 5.0;
+        let before = w.ledger.get(id).unwrap().binding_remainder;
+        tick_civilian_extractors(&mut w, 2);
+        let after = w.ledger.get(id).unwrap().binding_remainder;
+        assert!((before - after - 10.0).abs() < 1e-9, "before={before} after={after}");
+    }
+
+    #[test]
+    fn abandoned_auto_tick_requires_automation_active() {
+        let mut w = World::new(302);
+        let id = claimed_system(&mut w);
+        add_deposit(
+            &mut w,
+            id,
+            Deposit::new("stock.fissiles", 40.0, 1.0, ExtractorKind::AbandonedAuto),
+        )
+        .unwrap();
+        w.globals.abandoned_auto_extract_rate = 4.0;
+        tick_abandoned_automation(&mut w, 1);
+        assert!((w.ledger.get(id).unwrap().binding_remainder - 40.0).abs() < 1e-9);
+        let body = w.ledger.spawn_body(id);
+        w.ledger.get_body_mut(body).unwrap().automation_active = true;
+        tick_abandoned_automation(&mut w, 1);
+        assert!((w.ledger.get(id).unwrap().binding_remainder - 36.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn try_run_recipe_consumes_bom_no_vein_refill() {
+        let mut w = World::new(303);
+        let id = claimed_system(&mut w);
+        add_deposit(
+            &mut w,
+            id,
+            Deposit::new("stock.volatiles", 20.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        let ok = try_run_recipe(&mut w, id, "recipe.fuel_chem_refine").unwrap();
+        assert!(ok);
+        let qty: f64 = w
+            .ledger
+            .get(id)
+            .unwrap()
+            .deposits
+            .iter()
+            .filter(|d| d.stock_id == "stock.volatiles")
+            .map(|d| d.quantity)
+            .sum();
+        assert!((qty - 15.0).abs() < 1e-9, "got {qty}");
+        assert!(
+            w.ledger
+                .get(id)
+                .unwrap()
+                .outputs_stock
+                .get("fuel.chemical")
+                .copied()
+                .unwrap_or(0.0)
+                > 0.0
+        );
+    }
+
+    #[test]
+    fn world_tick_runs_civilian_drains() {
+        let mut w = World::new(304);
+        let id = claimed_system(&mut w);
+        add_deposit(
+            &mut w,
+            id,
+            Deposit::new("stock.volatiles", 100.0, 1.0, ExtractorKind::Civilian),
+        )
+        .unwrap();
+        w.globals.civilian_extract_rate = 3.0;
+        let before = w.ledger.get(id).unwrap().binding_remainder;
+        w.tick(5); // fine dt=1 → 5 ticks × 3 = 15
+        let after = w.ledger.get(id).unwrap().binding_remainder;
+        assert!(
+            (before - after - 15.0).abs() < 1e-6,
+            "world tick must drain civilians; before={before} after={after}"
+        );
+    }
+
+    #[test]
+    fn operator_run_recipe_and_civilian_line() {
+        use crate::operator::Operator;
+        let mut w = World::new(305);
+        let id = claimed_system(&mut w);
+        {
+            let mut op = Operator::new(&mut w);
+            op.add_deposit(id, "stock.volatiles", 30.0, 1.0, "state").unwrap();
+            let ok = op.run_recipe(id, "recipe.fuel_chem_refine").unwrap();
+            assert!(ok);
+            op.add_civilian_line(id, 2.0).unwrap();
+        }
+        // After recipe, volatiles should be 25; add civilian deposit for tick drain
+        add_deposit(
+            &mut w,
+            id,
+            Deposit::new("stock.organics", 20.0, 1.0, ExtractorKind::Civilian),
+        )
+        .unwrap();
+        assert_eq!(w.ledger.get(id).unwrap().civilian_lines.len(), 1);
+        assert!(
+            w.ledger
+                .get(id)
+                .unwrap()
+                .outputs_stock
+                .get("fuel.chemical")
+                .copied()
+                .unwrap_or(0.0)
+                > 0.0
+        );
     }
 }

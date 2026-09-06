@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::entity::{EntityId, OrderIntent, OrderSource, SystemEntity};
 use crate::event::EventKind;
 use crate::lod::LodHint;
-use crate::matter::{self, Deposit, ExtractorKind};
+use crate::matter::{self, CivilianLine, Deposit, ExtractorKind};
 use crate::minds::{self, set_empire_doctrine_field};
 use crate::world::World;
 
@@ -389,6 +389,60 @@ impl<'a> Operator<'a> {
     pub fn salvage_feed(&mut self, system: EntityId, amount: f64) -> Result<f64, OperatorError> {
         matter::salvage_into_feed(self.world, system, amount)
             .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+
+    /// Add a civilian extraction line (rate = quantity per master-tick).
+    pub fn add_civilian_line(
+        &mut self,
+        system: EntityId,
+        rate: f64,
+    ) -> Result<(), OperatorError> {
+        if !rate.is_finite() || rate < 0.0 {
+            return Err(OperatorError::InvalidValue {
+                field: "civilian_line.rate".into(),
+                reason: "expected finite >= 0".into(),
+            });
+        }
+        let tick = self.world.master_tick();
+        {
+            let entity = self
+                .world
+                .ledger_mut()
+                .get_mut(system)
+                .ok_or(OperatorError::NotFound(system))?;
+            entity.civilian_lines.push(CivilianLine::new(rate));
+        }
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: system,
+                field: "civilian_lines.push".into(),
+                old: "".into(),
+                new: rate.to_string(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Run a cosmology recipe BOM at a system (C chain stub).
+    pub fn run_recipe(
+        &mut self,
+        system: EntityId,
+        recipe_id: &str,
+    ) -> Result<bool, OperatorError> {
+        match matter::try_run_recipe(self.world, system, recipe_id) {
+            Ok(v) => Ok(v),
+            Err(matter::MatterError::SystemNotFound(id)) => Err(OperatorError::NotFound(id)),
+            Err(matter::MatterError::UnknownStock(id)) => Err(OperatorError::InvalidValue {
+                field: "recipe_id".into(),
+                reason: format!("unknown recipe/stock {id}"),
+            }),
+            Err(matter::MatterError::InvalidAmount) => Err(OperatorError::InvalidValue {
+                field: "recipe".into(),
+                reason: "invalid amount".into(),
+            }),
+        }
     }
 
     pub fn arm_fuse(&mut self, id: EntityId, end_tick: u64) -> Result<(), OperatorError> {
