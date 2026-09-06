@@ -293,6 +293,27 @@ pub fn tool_yard_at_system(
 /// True if design has `module.sensor_basic` and ship is not wrecked.
 
 /// Stub cargo capacity: 10 per `module.cargo_hold` on the design.
+
+/// Move fuel between two ships; both must share fuel_tier. No RNG.
+pub fn transfer_fuel(
+    from: &mut ShipInstance,
+    to: &mut ShipInstance,
+    qty: f64,
+) -> Result<(), HullError> {
+    if !qty.is_finite() || qty <= 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    if from.fuel_tier != to.fuel_tier {
+        return Err(HullError::DesignFuelMismatch);
+    }
+    if from.fuel_qty + 1e-12 < qty {
+        return Err(HullError::InsufficientFuel);
+    }
+    from.fuel_qty = (from.fuel_qty - qty).max(0.0);
+    to.fuel_qty += qty;
+    Ok(())
+}
+
 pub fn cargo_capacity(design: &ShipDesign) -> f64 {
     design
         .modules
@@ -714,5 +735,20 @@ mod tests {
         )
         .unwrap();
         assert!((cargo_capacity(&d1) - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn transfer_fuel_same_tier() {
+        let d = make_design(EntityId(80), "t", vec!["module.engine_chem".into()]).unwrap();
+        let mut a = spawn_instance(EntityId(81), &d, 5.0);
+        let mut b = spawn_instance(EntityId(82), &d, 1.0);
+        transfer_fuel(&mut a, &mut b, 2.0).unwrap();
+        assert!((a.fuel_qty - 3.0).abs() < 1e-9);
+        assert!((b.fuel_qty - 3.0).abs() < 1e-9);
+        b.fuel_tier = "fuel.fusion".into();
+        assert!(matches!(
+            transfer_fuel(&mut a, &mut b, 1.0).unwrap_err(),
+            HullError::DesignFuelMismatch
+        ));
     }
 }

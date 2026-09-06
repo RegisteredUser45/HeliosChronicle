@@ -456,6 +456,34 @@ impl<'a> Operator<'a> {
 
 
 
+
+    /// Transfer fuel between two ships (same fuel_tier).
+    pub fn transfer_ship_fuel(
+        &mut self,
+        from_id: EntityId,
+        to_id: EntityId,
+        qty: f64,
+    ) -> Result<(), OperatorError> {
+        // Split borrows via raw take pattern
+        if from_id == to_id {
+            return Err(OperatorError::Other("same ship".into()));
+        }
+        let mut from = self
+            .world
+            .ships
+            .remove(&from_id)
+            .ok_or(OperatorError::NotFound(from_id))?;
+        let mut to = self
+            .world
+            .ships
+            .remove(&to_id)
+            .ok_or(OperatorError::NotFound(to_id))?;
+        let res = crate::hulls::transfer_fuel(&mut from, &mut to, qty);
+        self.world.ships.insert(from_id, from);
+        self.world.ships.insert(to_id, to);
+        res.map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Cargo capacity from design cargo_hold modules.
     pub fn ship_cargo_capacity(&self, ship_id: EntityId) -> Result<f64, OperatorError> {
         let ship = self
