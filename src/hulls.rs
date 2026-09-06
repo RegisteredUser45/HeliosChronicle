@@ -59,6 +59,7 @@ pub enum HullError {
     EmpireNotFound,
     YardMaterials,
     InsufficientFuel,
+    SystemNotFound,
 }
 
 impl std::fmt::Display for HullError {
@@ -76,6 +77,7 @@ impl std::fmt::Display for HullError {
             Self::EmpireNotFound => write!(f, "empire not found"),
             Self::YardMaterials => write!(f, "yard materials missing (hull_plate recipe)"),
             Self::InsufficientFuel => write!(f, "insufficient fuel"),
+            Self::SystemNotFound => write!(f, "system not found"),
         }
     }
 }
@@ -198,6 +200,58 @@ pub fn tool_yard(world: &mut World, empire_id: EntityId, design_id: EntityId) ->
 
 
 /// Burn fuel for a move (B calls after can_move). No RNG.
+
+/// Draw `fuel_tier` from a system's `outputs_stock` (C recipe outputs) into the ship tank.
+pub fn refuel_from_system(
+    world: &mut World,
+    ship_id: EntityId,
+    system: EntityId,
+    qty: f64,
+) -> Result<f64, HullError> {
+    if !qty.is_finite() || qty <= 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    let tier = world
+        .ships
+        .get(&ship_id)
+        .ok_or(HullError::ShipNotFound)?
+        .fuel_tier
+        .clone();
+    {
+        let sys = world
+            .ledger
+            .get_mut(system)
+            .ok_or(HullError::SystemNotFound)?;
+        let have = sys.outputs_stock.get(&tier).copied().unwrap_or(0.0);
+        if have + 1e-12 < qty {
+            return Err(HullError::InsufficientFuel);
+        }
+        *sys.outputs_stock.get_mut(&tier).unwrap() = (have - qty).max(0.0);
+        if sys.outputs_stock.get(&tier).copied().unwrap_or(0.0) <= 1e-12 {
+            sys.outputs_stock.remove(&tier);
+        }
+    }
+    let ship = world.ships.get_mut(&ship_id).ok_or(HullError::ShipNotFound)?;
+    refuel(ship, &tier, qty)?;
+    Ok(ship.fuel_qty)
+}
+
+/// Refine `recipe.fuel_chem_refine` (or matching tier recipe) then tank the produced fuel.
+pub fn refine_fuel_at_system(
+    world: &mut World,
+    ship_id: EntityId,
+    system: EntityId,
+    recipe_id: &str,
+) -> Result<f64, HullError> {
+    let ran = crate::matter::try_run_recipe(world, system, recipe_id)
+        .map_err(|_| HullError::YardMaterials)?;
+    if !ran {
+        return Err(HullError::YardMaterials);
+    }
+    // Pull 1.0 unit of the ship's fuel tier from outputs (chem refine outputs qty 1).
+    refuel_from_system(world, ship_id, system, 1.0)
+}
+
 pub fn spend_fuel(ship: &mut ShipInstance, amount: f64) -> Result<f64, HullError> {
     if !amount.is_finite() || amount < 0.0 {
         return Err(HullError::BadFuel);
@@ -366,5 +420,51 @@ mod tests {
             build_ship_at_system(&mut w, empire, did, system, 1.0).unwrap_err(),
             HullError::YardMaterials
         ));
+    }
+
+    #[test]
+    fn refine_chem_fuel_into_tank() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(13);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.volatiles", 10.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.ore_binding", 8.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.silicates", 4.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        let did = register_design(
+            &mut w,
+            empire,
+            "tanker",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        tool_yard(&mut w, empire, did).unwrap();
+        let sid = build_ship_at_system(&mut w, empire, did, system, 0.0).unwrap();
+        assert!(!can_move(w.ship_designs.get(&did).unwrap(), w.ships.get(&sid).unwrap()));
+        let qty = refine_fuel_at_system(&mut w, sid, system, "recipe.fuel_chem_refine").unwrap();
+        assert!((qty - 1.0).abs() < 1e-9);
+        assert!(can_move(w.ship_designs.get(&did).unwrap(), w.ships.get(&sid).unwrap()));
+        spend_fuel(w.ships.get_mut(&sid).unwrap(), 1.0).unwrap();
+        assert!(!can_move(w.ship_designs.get(&did).unwrap(), w.ships.get(&sid).unwrap()));
     }
 }

@@ -288,6 +288,40 @@ impl<'a> Operator<'a> {
             .map_err(|e| OperatorError::Other(e.to_string()))
     }
 
+
+    /// Build ship at a system yard (consumes recipe.hull_plate).
+    pub fn build_ship_at_yard(
+        &mut self,
+        empire_id: EntityId,
+        design_id: EntityId,
+        system: EntityId,
+        fuel_qty: f64,
+    ) -> Result<EntityId, OperatorError> {
+        crate::hulls::build_ship_at_system(self.world, empire_id, design_id, system, fuel_qty)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Spend ship fuel (motion burn).
+    pub fn spend_ship_fuel(&mut self, ship_id: EntityId, amount: f64) -> Result<f64, OperatorError> {
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        crate::hulls::spend_fuel(ship, amount).map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Refine fuel recipe at system into ship tank.
+    pub fn refine_ship_fuel(
+        &mut self,
+        ship_id: EntityId,
+        system: EntityId,
+        recipe_id: &str,
+    ) -> Result<f64, OperatorError> {
+        crate::hulls::refine_fuel_at_system(self.world, ship_id, system, recipe_id)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Build a ship from a tooled design.
     pub fn build_ship_instance(
         &mut self,
