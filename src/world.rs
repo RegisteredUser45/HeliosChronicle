@@ -265,6 +265,9 @@ impl World {
                 lod: format!("{:?}", lod),
             },
         );
+        // Phase E: advance labs (segment RP; completions emit SegmentResearched).
+        crate::research::tick_all_labs(self, dt);
+
         // Phase I: score known feed/fuse (no-op unless scoring_enabled).
         crate::minds::minds_tick_stub(self);
         self.recompute_outcome_hash();

@@ -305,6 +305,16 @@ pub fn tick_lab(
     Ok(None)
 }
 
+
+/// Advance every lab on the world by `dt`. Completions emit SegmentResearched.
+/// Errors on a single lab are skipped (prereq blocks) so the tick stays robust.
+pub fn tick_all_labs(world: &mut crate::world::World, dt: u64) {
+    let ids: Vec<_> = world.labs.keys().copied().collect();
+    for id in ids {
+        let _ = tick_lab_on_world(world, id, dt);
+    }
+}
+
 pub fn tick_lab_on_world(world: &mut crate::world::World, lab_id: EntityId, dt: u64) -> Result<Option<String>, String> {
     use crate::event::EventKind;
     let empire_id = world.labs.get(&lab_id).map(|l| l.empire_id).ok_or_else(|| format!("lab {lab_id} not found"))?;
@@ -378,5 +388,22 @@ mod tests {
         let mut lab = make_lab(EntityId(2), EntityId(1), 1000.0);
         assign_lab(&mut lab, "seg.yard").unwrap();
         assert!(tick_lab(&mut lab, &mut empire, &g, 10_000).unwrap_err().contains("prereqs"));
+    }
+
+    #[test]
+    fn world_tick_advances_assigned_labs() {
+        use crate::event::EventKind;
+        use crate::world::World;
+        let mut w = World::new(11);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment("seg.basic_lab").unwrap()).unwrap();
+        let lab_id = w.ledger.alloc_id();
+        let mut lab = make_lab(lab_id, empire, 1.0);
+        assign_lab(&mut lab, "seg.yard").unwrap();
+        w.labs.insert(lab_id, lab);
+        w.tick(1000);
+        let emp = w.ledger.get_empire(empire).unwrap();
+        assert!(emp.unlocked_segments.contains("seg.yard"), "yard should complete via world tick");
+        assert!(w.log.events().iter().any(|e| matches!(&e.kind, EventKind::SegmentResearched { segment, .. } if segment == "seg.yard")));
     }
 }

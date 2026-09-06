@@ -232,6 +232,138 @@ impl<'a> Operator<'a> {
 
     /// Force-arm a fuse ending at an absolute master tick (stub for B).
 
+
+    /// Spawn a research lab for an empire (Phase E).
+    pub fn spawn_lab(&mut self, empire_id: EntityId, capacity: f64) -> Result<EntityId, OperatorError> {
+        if self.world.ledger().get_empire(empire_id).is_none() {
+            return Err(OperatorError::NotFound(empire_id));
+        }
+        let id = self.world.ledger_mut().alloc_id();
+        let lab = crate::research::make_lab(id, empire_id, capacity);
+        self.world.labs.insert(id, lab);
+        let tick = self.world.master_tick();
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: id,
+                field: "lab_spawned".into(),
+                old: String::new(),
+                new: format!("empire={empire_id} capacity={capacity}"),
+            },
+        );
+        Ok(id)
+    }
+
+    /// Assign a lab to a research segment id.
+    pub fn assign_research(&mut self, lab_id: EntityId, segment_id: &str) -> Result<(), OperatorError> {
+        let lab = self.world.labs.get_mut(&lab_id).ok_or(OperatorError::NotFound(lab_id))?;
+        crate::research::assign_lab(lab, segment_id).map_err(OperatorError::Other)?;
+        let tick = self.world.master_tick();
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: lab_id,
+                field: "assigned_segment".into(),
+                old: String::new(),
+                new: segment_id.into(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Register a ship design (modules must be unlocked).
+    pub fn register_ship_design(
+        &mut self,
+        empire_id: EntityId,
+        name: &str,
+        modules: Vec<String>,
+    ) -> Result<EntityId, OperatorError> {
+        crate::hulls::register_design(self.world, empire_id, name, modules)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Tool yard for a design.
+    pub fn tool_ship_yard(&mut self, empire_id: EntityId, design_id: EntityId) -> Result<(), OperatorError> {
+        crate::hulls::tool_yard(self.world, empire_id, design_id)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Build a ship from a tooled design.
+    pub fn build_ship_instance(
+        &mut self,
+        empire_id: EntityId,
+        design_id: EntityId,
+        fuel_qty: f64,
+    ) -> Result<EntityId, OperatorError> {
+        crate::hulls::build_ship(self.world, empire_id, design_id, fuel_qty)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Mutate Phase F ship god/fuel fields.
+    pub fn set_ship_field(
+        &mut self,
+        ship_id: EntityId,
+        field: &str,
+        value: &str,
+    ) -> Result<(), OperatorError> {
+        let tick = self.world.master_tick();
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        let (old, new) = match field {
+            "fuel_qty" => {
+                let v: f64 = value.parse().map_err(|_| OperatorError::InvalidValue {
+                    field: field.into(),
+                    reason: "expected f64".into(),
+                })?;
+                let old = ship.fuel_qty.to_string();
+                ship.fuel_qty = v;
+                (old, v.to_string())
+            }
+            "damage" => {
+                let v: f64 = value.parse().map_err(|_| OperatorError::InvalidValue {
+                    field: field.into(),
+                    reason: "expected f64".into(),
+                })?;
+                let old = ship.damage.to_string();
+                ship.damage = v.clamp(0.0, 1.0);
+                (old, ship.damage.to_string())
+            }
+            "planetary_strike" => {
+                let v = parse_bool(value).ok_or_else(|| OperatorError::InvalidValue {
+                    field: field.into(),
+                    reason: "expected bool".into(),
+                })?;
+                let old = ship.planetary_strike.to_string();
+                ship.planetary_strike = v;
+                (old, v.to_string())
+            }
+            "sidearm_caliber" => {
+                let v: f64 = value.parse().map_err(|_| OperatorError::InvalidValue {
+                    field: field.into(),
+                    reason: "expected f64".into(),
+                })?;
+                let old = ship.sidearm_caliber.to_string();
+                ship.sidearm_caliber = v;
+                (old, v.to_string())
+            }
+            other => return Err(OperatorError::UnknownField(other.into())),
+        };
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: ship_id,
+                field: field.into(),
+                old,
+                new,
+            },
+        );
+        Ok(())
+    }
+
+
     /// Mutate a Phase D body field. Every successful mutation is logged.
     pub fn set_body_field(
         &mut self,
@@ -485,5 +617,43 @@ fn parse_bool(s: &str) -> Option<bool> {
         "true" | "1" | "yes" => Some(true),
         "false" | "0" | "no" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::research::{find_segment, unlock_segment};
+    use crate::world::World;
+
+    #[test]
+    fn operator_ef_lab_to_ship_pipeline() {
+        let mut w = World::new(42);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            unlock_segment(e, &find_segment("seg.basic_lab").unwrap()).unwrap();
+            unlock_segment(e, &find_segment("seg.chem_drive").unwrap()).unwrap();
+            unlock_segment(e, &find_segment("seg.yard").unwrap()).unwrap();
+            unlock_segment(e, &find_segment("seg.tankage").unwrap()).unwrap();
+        }
+        let mut op = Operator::new(&mut w);
+        let lab = op.spawn_lab(empire, 2.0).unwrap();
+        op.assign_research(lab, "seg.mine_auto").unwrap();
+        let did = op
+            .register_ship_design(
+                empire,
+                "scout",
+                vec!["module.engine_chem".into(), "module.tankage".into()],
+            )
+            .unwrap();
+        op.tool_ship_yard(empire, did).unwrap();
+        let sid = op.build_ship_instance(empire, did, 10.0).unwrap();
+        op.set_ship_field(sid, "fuel_qty", "5.0").unwrap();
+        assert_eq!(w.ships.get(&sid).unwrap().fuel_qty, 5.0);
+        assert_eq!(
+            w.labs.get(&lab).unwrap().assigned_segment.as_deref(),
+            Some("seg.mine_auto")
+        );
     }
 }
