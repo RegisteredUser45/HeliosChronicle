@@ -205,6 +205,7 @@ fn notify_sensors_of_strike(world: &mut World, system: EntityId) {
         .collect();
     for obs in observers {
         let _ = crate::sensors::detect_strike(world, obs, system, false);
+        let _ = crate::sensors::poll_signal_envelope(world, obs, false);
     }
 }
 

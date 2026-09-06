@@ -102,6 +102,29 @@ pub fn discover_wreck(
     ))
 }
 
+
+/// For each Signal KO whose payload.system is in sensor range, try receive_signal.
+/// Returns how many KOs were newly acquired.
+pub fn poll_signal_envelope(
+    world: &mut World,
+    observer: EmpireId,
+    force_in_range: bool,
+) -> usize {
+    let candidates: Vec<EntityId> = world
+        .knowledge
+        .iter()
+        .filter(|(_, ko)| matches!(ko.kind, KoKind::Signal))
+        .map(|(id, _)| *id)
+        .collect();
+    let mut n = 0;
+    for ko_id in candidates {
+        if receive_signal(world, observer, ko_id, force_in_range) {
+            n += 1;
+        }
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,4 +196,39 @@ mod tests {
         let ko = discover_wreck(&mut w, obs, sys, true).expect("wreck ko");
         assert_eq!(w.knowledge.get(ko).unwrap().kind, KoKind::Wreck);
     }
+
+    #[test]
+    fn poll_signal_envelope_acquires() {
+        let mut w = World::new(5);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        let obs = EmpireId(5);
+        sense_system(&mut w, obs, sys);
+        let ko = emit_ko(
+            &mut w,
+            EmitKoParams {
+                kind: KoKind::Signal,
+                grade: KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: KoPayload {
+                    who_actor: None,
+                    who_victim: None,
+                    system: Some(sys),
+                    severity: 1,
+                    target_type: "signal".into(),
+                    claim: "burst".into(),
+                },
+                initial_carriers: BTreeSet::new(),
+                propagation: KoPropagation::Broadcast,
+            },
+        );
+        assert_eq!(poll_signal_envelope(&mut w, obs, false), 1);
+        assert!(w
+            .knowledge
+            .get(ko)
+            .unwrap()
+            .carriers
+            .iter()
+            .any(|c| matches!(c, crate::knowledge::CarrierId::Empire(e) if *e == obs)));
+    }
+
 }
