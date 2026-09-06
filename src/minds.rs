@@ -13,6 +13,7 @@ use crate::entity::{
     SystemEntity,
 };
 use crate::event::EventKind;
+use crate::lod::{LodHint, LodMode};
 use crate::sky::{self, MapState};
 use crate::world::World;
 
@@ -550,13 +551,43 @@ pub fn on_home_flag_clear(world: &mut World, system_id: EntityId) {
     rescore_system(world, system_id);
 }
 
+/// Under Coarse LOD, only "hot" empires get an Ai order this tick (Issue 10).
+///
+/// Hot = owns/home a Hot-hint system, or any known system that is DryFuse /
+/// HomePaused / Ended (needs attention). Fine LOD evaluates every empire.
+pub fn empire_needs_minds_tick(world: &World, empire_id: EntityId) -> bool {
+    if matches!(world.lod(), LodMode::Fine) {
+        return true;
+    }
+    let eid = EmpireId(empire_id.0);
+    for (_id, sys) in world.ledger.systems() {
+        let cares = sys.home_empire == Some(eid)
+            || is_system_known(world, empire_id, sys);
+        if !cares {
+            continue;
+        }
+        if matches!(sys.lod_hint, LodHint::Hot) {
+            return true;
+        }
+        match sky::map_state(sys) {
+            MapState::DryFuse | MapState::HomePaused | MapState::Ended => return true,
+            MapState::Feed | MapState::WildernessUnknown => {}
+        }
+    }
+    false
+}
+
 /// Minds tick — when scoring is enabled, emit at most one Ai order per empire per tick.
+/// Coarse LOD skips quiet empires (see `empire_needs_minds_tick`).
 pub fn minds_tick_stub(world: &mut World) {
     if !world.minds_flags.scoring_enabled {
         return;
     }
     let empire_ids: Vec<EntityId> = world.ledger.empires().map(|(id, _)| *id).collect();
     for empire_id in empire_ids {
+        if !empire_needs_minds_tick(world, empire_id) {
+            continue;
+        }
         let system_ids: Vec<EntityId> = world.ledger.systems().map(|(id, _)| *id).collect();
         let mut best: Option<SystemScore> = None;
         for sid in system_ids {
@@ -1267,6 +1298,44 @@ mod minds_tests {
         );
     }
 
+
+    #[test]
+    fn coarse_lod_skips_quiet_empire_minds_tick() {
+        let mut w = World::new(100);
+        w.minds_flags.scoring_enabled = true;
+        w.set_lod(crate::lod::LodMode::Coarse);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        // Make all systems quiet Feed with known home
+        let systems: Vec<_> = w.ledger.systems().map(|(id, _)| *id).collect();
+        for sid in &systems {
+            let s = w.ledger.get_mut(*sid).unwrap();
+            s.lod_hint = crate::lod::LodHint::Quiet;
+            s.depleted = false;
+            s.fuse_end_tick = None;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.binding_remainder = 800.0;
+            s.home_empire = Some(EmpireId(empire.0));
+        }
+        assert!(!empire_needs_minds_tick(&w, empire));
+        let before = w.ledger.orders_len();
+        minds_tick_stub(&mut w);
+        assert_eq!(w.ledger.orders_len(), before, "coarse+quiet must skip emit");
+
+        // Mark one system Hot → empire needs tick and may emit
+        let hot = systems[0];
+        w.ledger.get_mut(hot).unwrap().lod_hint = crate::lod::LodHint::Hot;
+        assert!(empire_needs_minds_tick(&w, empire));
+        minds_tick_stub(&mut w);
+        assert!(
+            w.ledger.orders_len() > before,
+            "coarse+hot should allow an Ai order"
+        );
+    }
+
+    #[test]
     fn wilderness_unknown_not_infinite() {
         let mut w = World::new(56);
         let empire = *w.ledger.empires().next().unwrap().0;

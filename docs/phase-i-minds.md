@@ -59,6 +59,10 @@ On `HomeFlagClear` (operator or future B collapse path):
 Re-score runs **before further AI orders** in that tick once scoring is wired.
 
 
+## LOD-aware minds tick (Issue 10)
+
+Under `LodMode::Coarse`, `minds_tick_stub` only emits for empires that need attention (`empire_needs_minds_tick`: Hot-hint system, or known DryFuse / HomePaused / Ended). Fine LOD still evaluates every empire. ≤1 Ai order per empire per tick; salt family never from scoring.
+
 ## Scoring (B + C)
 
 - Coarse bucket: `sky::map_state(sys)` only — no parallel map bits, no Dying variant.
