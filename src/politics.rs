@@ -14,6 +14,8 @@ pub const STANDING_CONFIRMED: i32 = 15;
 pub const STANDING_SALT_VICTIM: i32 = 40;
 pub const STANDING_FIRST_CONTACT: i32 = 2;
 pub const STANDING_VIOLENCE_VICTIM: i32 = 25;
+/// Extra mutual standing hit when a ReparationsStub treaty is broken.
+pub const STANDING_REPARATIONS_BREACH: i32 = 10;
 /// Standing delta multiplier numerator when NonAggression treaty holds (half impact).
 pub const NON_AGGRESSION_SOFTEN_NUM: i32 = 1;
 pub const NON_AGGRESSION_SOFTEN_DEN: i32 = 2;
@@ -78,6 +80,13 @@ fn bump_standing(world: &mut World, a: EmpireId, b: EmpireId, delta: i32, reason
     set_standing(world, a, b, old.saturating_add(delta), reason_seq);
 }
 
+
+
+/// Extra standing penalty when a treaty with ReparationsStub is broken (G/P).
+pub fn apply_reparations_breach(world: &mut World, a: EmpireId, b: EmpireId, seq: u64) {
+    bump_standing(world, a, b, -STANDING_REPARATIONS_BREACH, seq);
+    bump_standing(world, b, a, -STANDING_REPARATIONS_BREACH, seq);
+}
 
 fn violence_standing_delta(world: &World, actor: EmpireId, victim: EmpireId, base: i32) -> i32 {
     if crate::contact::has_clause(world, actor, victim, crate::contact::TreatyClause::NonAggression) {

@@ -288,16 +288,17 @@ pub fn break_treaty(
     emit_breach_ko: bool,
 ) -> bool {
     let tick = world.master_tick();
-    let mut found: Option<(EmpireId, EmpireId)> = None;
+    let mut found: Option<(EmpireId, EmpireId, bool)> = None;
     for (_eid, contact) in world.contact.empires.iter_mut() {
         if let Some(pos) = contact.treaties.iter().position(|t| t.id == treaty_id) {
             let t = contact.treaties.remove(pos);
-            found = Some((t.a, t.b));
+            let had_reparations = t.clauses.iter().any(|c| *c == TreatyClause::ReparationsStub);
+            found = Some((t.a, t.b, had_reparations));
             // Remove from both sides — continue scan
         }
     }
     // Clean residual copies on the other party
-    if let Some((a, b)) = found {
+    if let Some((a, b, had_reparations)) = found {
         for party in [a, b] {
             if let Some(c) = world.contact.empires.get_mut(&party) {
                 c.treaties.retain(|t| t.id != treaty_id);
@@ -314,6 +315,9 @@ pub fn break_treaty(
         );
         let chronicle = ev.clone();
         apply_event_for_standing(world, &chronicle);
+        if had_reparations {
+            crate::politics::apply_reparations_breach(world, a, b, chronicle.seq);
+        }
         if emit_breach_ko {
             let _ = crate::knowledge::emit_ko(
                 world,
@@ -476,6 +480,25 @@ pub fn has_clause(world: &World, a: EmpireId, b: EmpireId, clause: TreatyClause)
     })
 }
 
+
+/// Mark a known system as surveyed (fuse product known). Creates fog entry if missing.
+pub fn mark_system_surveyed(world: &mut World, empire: EmpireId, system: EntityId) -> bool {
+    let tick = world.master_tick();
+    let entry = world
+        .contact
+        .ensure(empire)
+        .fog
+        .known_systems
+        .entry(system)
+        .or_insert_with(|| SystemFogEntry::fresh(tick));
+    let was = entry.surveyed_fuse;
+    entry.surveyed_fuse = true;
+    entry.last_known_tick = tick;
+    push_fine_hot(world, system);
+    world.recompute_outcome_hash();
+    !was
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,6 +613,36 @@ mod tests {
         sign_treaty(&mut w, a, b, vec![TreatyClause::NonAggression]);
         assert!(has_clause(&w, a, b, TreatyClause::NonAggression));
         assert!(has_clause(&w, b, a, TreatyClause::NonAggression));
+    }
+
+
+    #[test]
+    fn reparations_breach_extra_standing() {
+        let mut w = World::new(71);
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        let id = sign_treaty(
+            &mut w,
+            a,
+            b,
+            vec![TreatyClause::NonAggression, TreatyClause::ReparationsStub],
+        );
+        // After sign: +STANDING_FIRST_CONTACT each way.
+        assert!(break_treaty(&mut w, id, false));
+        // Base break -2, plus reparations -10 each way => net from sign+break = -10.
+        let st = w.standing.get(a, b);
+        assert_eq!(st, -crate::politics::STANDING_REPARATIONS_BREACH);
+    }
+
+    #[test]
+    fn mark_system_surveyed_sets_fuse() {
+        let mut w = World::new(72);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let e = EmpireId(3);
+        assert!(mark_system_surveyed(&mut w, e, system));
+        let fog = w.contact.get(e).unwrap().fog.known_systems.get(&system).unwrap();
+        assert!(fog.surveyed_fuse);
+        assert!(!mark_system_surveyed(&mut w, e, system));
     }
 
 }

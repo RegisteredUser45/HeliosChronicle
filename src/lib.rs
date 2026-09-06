@@ -26,7 +26,7 @@ pub mod research;
 pub mod hulls;
 
 pub use contact::{
-    break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, has_clause, push_fine_hot,
+    break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, has_clause, mark_system_surveyed, push_fine_hot,
     sense_fleet, sign_contract, sign_treaty, upgrade_fog, Contract, ContractKind, EmpireContact,
     EmpireContactStore, FleetFogEntry, FogState, SystemFogEntry, Treaty, TreatyClause,
 };
@@ -50,8 +50,8 @@ pub use matter::{
 pub use minds::{clamp_doctrine, MindsFlags};
 pub use operator::{Operator, OperatorError};
 pub use politics::{
-    apply_event_for_standing, emit_salt, StandingStore, STANDING_CONFIRMED, STANDING_FIRST_CONTACT,
-    STANDING_RUMOR, STANDING_SALT_VICTIM, STANDING_VIOLENCE_VICTIM,
+    apply_event_for_standing, apply_reparations_breach, emit_salt, StandingStore, STANDING_CONFIRMED, STANDING_FIRST_CONTACT,
+    STANDING_RUMOR, STANDING_SALT_VICTIM, STANDING_REPARATIONS_BREACH, STANDING_VIOLENCE_VICTIM,
 };
 pub use save::{load_world, save_world, SaveError};
 pub use world::World;
