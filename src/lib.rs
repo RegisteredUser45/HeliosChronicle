@@ -43,7 +43,7 @@ pub use lod::{LodHint, LodMode};
 pub use matter::{
     add_deposit, compute_binding_remainder, deposit_counts_as_binding, extract,
     extract_abandoned_auto, extract_civilian, extract_foreign, extract_state,
-    reaggregate_and_check, salvage_into_feed, salvage_into_feed_stock, tick_abandoned_automation,
+    reaggregate_and_check, salvage_into_feed, salvage_into_feed_stock, seed_deposits_from_binding_stocks, tick_abandoned_automation,
     tick_civilian_extractors, try_run_recipe, CivilianLine, Deposit, ExtractorKind, MatterError,
 };
 pub use minds::{clamp_doctrine, MindsFlags};

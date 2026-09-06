@@ -5,6 +5,7 @@
 //! fires fuse ends monotonically via `fuse_crossed_end`.
 
 use crate::cosmology::embedded_catalog;
+use crate::matter::{self, ExtractorKind};
 use crate::entity::{EmpireId, EntityId, SystemEntity};
 use crate::event::EventKind;
 use crate::world::World;
@@ -183,6 +184,7 @@ pub fn spawn_system_with_catalog(world: &mut World, wilderness: bool) -> EntityI
     let angle = (world.rng_u64() % 360) as f64;
     let radius = 10.0 + (world.rng_u64() % 90) as f64;
     roll_binding_stocks(world, id);
+    let _ = matter::seed_deposits_from_binding_stocks(world, id, 1.0, ExtractorKind::State);
     if let Some(sys) = world.ledger.get_mut(id) {
         sys.x = radius * angle.to_radians().cos();
         sys.y = radius * angle.to_radians().sin();

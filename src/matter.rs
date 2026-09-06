@@ -264,6 +264,48 @@ pub fn salvage_into_feed(world: &mut World, system: EntityId, amount: f64) -> Re
 }
 
 
+
+/// Materialize `binding_stocks` map into Deposit veins (default State extractor).
+///
+/// Spawn rolls quantities into `binding_stocks`; C owns deposits, so this bridges
+/// B spawn → C veins, then reaggregates remainder (Lock 1/C7). Skips qty <= 0.
+pub fn seed_deposits_from_binding_stocks(
+    world: &mut World,
+    system: EntityId,
+    accessibility: f64,
+    extractor: ExtractorKind,
+) -> Result<usize, MatterError> {
+    let acc = accessibility.clamp(0.0, 1.0);
+    let stocks = {
+        let sys = world
+            .ledger
+            .get(system)
+            .ok_or(MatterError::SystemNotFound(system))?;
+        sys.binding_stocks.clone()
+    };
+    let mut added = 0usize;
+    {
+        let sys = world
+            .ledger
+            .get_mut(system)
+            .ok_or(MatterError::SystemNotFound(system))?;
+        for (stock_id, qty) in stocks {
+            if qty <= 1e-12 {
+                continue;
+            }
+            if !embedded_catalog().contains_stock(&stock_id)
+                && !embedded_catalog().rares.iter().any(|r| r.id == stock_id)
+            {
+                continue;
+            }
+            sys.deposits.push(Deposit::new(stock_id, qty, acc, extractor));
+            added += 1;
+        }
+    }
+    reaggregate_and_check(world, system)?;
+    Ok(added)
+}
+
 /// Optional per-system civilian extraction line (quantity per master-tick).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CivilianLine {
@@ -831,5 +873,23 @@ mod matter_tests {
                 .unwrap_or(0.0)
                 > 0.0
         );
+    }
+
+    #[test]
+    fn seed_deposits_from_spawn_binding_stocks() {
+        use crate::sky::spawn_system_with_catalog;
+        let mut w = World::new(401);
+        let id = spawn_system_with_catalog(&mut w, false);
+        let sys = w.ledger.get(id).unwrap();
+        assert!(
+            !sys.deposits.is_empty(),
+            "spawn should seed C deposits from binding_stocks"
+        );
+        let rem = compute_binding_remainder(&sys.deposits, w.globals.binding_floor);
+        assert!((sys.binding_remainder - rem).abs() < 1e-9);
+        let before = sys.binding_remainder;
+        extract_state(&mut w, id, 1.0).unwrap();
+        let after = w.ledger.get(id).unwrap().binding_remainder;
+        assert!(after <= before + 1e-9);
     }
 }
