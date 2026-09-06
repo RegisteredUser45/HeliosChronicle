@@ -85,6 +85,16 @@ pub fn stub_tech_book() -> (Vec<TechLine>, Vec<TechSegment>) {
             category: TechCategory::Population,
             segment_ids: vec!["seg.habitat_seal".into(), "seg.crew_habitat_mod".into()],
         },
+        TechLine {
+            id: "line.outfitting".into(),
+            name: "Outfitting".into(),
+            category: TechCategory::Hull,
+            segment_ids: vec![
+                "seg.sensor_basic".into(),
+                "seg.weapon_kinetic".into(),
+                "seg.cargo_hold".into(),
+            ],
+        },
     ];
 
     let segments = vec![
@@ -182,6 +192,33 @@ pub fn stub_tech_book() -> (Vec<TechLine>, Vec<TechSegment>) {
             display_name: "Crew habitat module".into(),
             material_gates: vec!["stock.organics".into()],
             unlocks: vec!["module.crew_habitat".into()],
+            salvage_skip_allowed: true,
+        },
+        TechSegment {
+            id: "seg.sensor_basic".into(),
+            line_id: "line.outfitting".into(),
+            index: 0,
+            display_name: "Basic sensors".into(),
+            material_gates: vec!["stock.rare_earth".into(), "recipe.power_core_basic".into()],
+            unlocks: vec!["module.sensor_basic".into()],
+            salvage_skip_allowed: true,
+        },
+        TechSegment {
+            id: "seg.weapon_kinetic".into(),
+            line_id: "line.outfitting".into(),
+            index: 1,
+            display_name: "Kinetic weapon".into(),
+            material_gates: vec!["stock.ore_binding".into(), "recipe.hull_plate".into()],
+            unlocks: vec!["module.weapon_kinetic".into()],
+            salvage_skip_allowed: true,
+        },
+        TechSegment {
+            id: "seg.cargo_hold".into(),
+            line_id: "line.outfitting".into(),
+            index: 2,
+            display_name: "Cargo hold".into(),
+            material_gates: vec!["stock.silicates".into()],
+            unlocks: vec!["module.cargo_hold".into()],
             salvage_skip_allowed: true,
         },
     ];
@@ -405,5 +442,16 @@ mod tests {
         let emp = w.ledger.get_empire(empire).unwrap();
         assert!(emp.unlocked_segments.contains("seg.yard"), "yard should complete via world tick");
         assert!(w.log.events().iter().any(|e| matches!(&e.kind, EventKind::SegmentResearched { segment, .. } if segment == "seg.yard")));
+    }
+
+    #[test]
+    fn outfitting_segments_ref_catalog() {
+        for sid in ["seg.sensor_basic", "seg.weapon_kinetic", "seg.cargo_hold"] {
+            let seg = find_segment(sid).unwrap();
+            gates_ref_catalog(&seg).unwrap();
+            assert!(!seg.unlocks.is_empty());
+        }
+        let (lines, _) = stub_tech_book();
+        assert!(lines.iter().any(|l| l.id == "line.outfitting"));
     }
 }

@@ -57,6 +57,8 @@ pub enum HullError {
     ShipNotFound,
     BadFuel,
     EmpireNotFound,
+    YardMaterials,
+    InsufficientFuel,
 }
 
 impl std::fmt::Display for HullError {
@@ -72,6 +74,8 @@ impl std::fmt::Display for HullError {
             Self::ShipNotFound => write!(f, "ship not found"),
             Self::BadFuel => write!(f, "fuel tier/qty invalid"),
             Self::EmpireNotFound => write!(f, "empire not found"),
+            Self::YardMaterials => write!(f, "yard materials missing (hull_plate recipe)"),
+            Self::InsufficientFuel => write!(f, "insufficient fuel"),
         }
     }
 }
@@ -192,6 +196,35 @@ pub fn tool_yard(world: &mut World, empire_id: EntityId, design_id: EntityId) ->
     Ok(())
 }
 
+
+/// Burn fuel for a move (B calls after can_move). No RNG.
+pub fn spend_fuel(ship: &mut ShipInstance, amount: f64) -> Result<f64, HullError> {
+    if !amount.is_finite() || amount < 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    if ship.fuel_qty + 1e-12 < amount {
+        return Err(HullError::InsufficientFuel);
+    }
+    ship.fuel_qty = (ship.fuel_qty - amount).max(0.0);
+    Ok(ship.fuel_qty)
+}
+
+/// Build at a system yard: consume `recipe.hull_plate` via C matter, then spawn ship.
+pub fn build_ship_at_system(
+    world: &mut World,
+    empire_id: EntityId,
+    design_id: EntityId,
+    system: EntityId,
+    fuel_qty: f64,
+) -> Result<EntityId, HullError> {
+    let ran = crate::matter::try_run_recipe(world, system, "recipe.hull_plate")
+        .map_err(|_| HullError::YardMaterials)?;
+    if !ran {
+        return Err(HullError::YardMaterials);
+    }
+    build_ship(world, empire_id, design_id, fuel_qty)
+}
+
 pub fn build_ship(world: &mut World, empire_id: EntityId, design_id: EntityId, fuel_qty: f64) -> Result<EntityId, HullError> {
     let tooled = world.ledger.get_empire(empire_id).map(|e| e.tooled_design_ids.contains(&design_id.0)).unwrap_or(false);
     if !tooled { return Err(HullError::YardNotTooled); }
@@ -281,5 +314,57 @@ mod tests {
         assert!(can_move(&d, &s));
         apply_ship_damage(&mut s, 0.8);
         assert!(!can_move(&d, &s));
+    }
+
+    #[test]
+    fn spend_fuel_blocks_empty_tank() {
+        let d = make_design(EntityId(20), "boat", vec!["module.engine_chem".into()]).unwrap();
+        let mut s = spawn_instance(EntityId(21), &d, 2.0);
+        assert!((spend_fuel(&mut s, 1.5).unwrap() - 0.5).abs() < 1e-9);
+        assert!(matches!(spend_fuel(&mut s, 1.0).unwrap_err(), HullError::InsufficientFuel));
+        assert!(!can_move(&d, &s) || s.fuel_qty < 1.0);
+        s.fuel_qty = 0.0;
+        assert!(!can_move(&d, &s));
+    }
+
+    #[test]
+    fn build_ship_at_system_consumes_hull_plate() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(9);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        // seed BOM for recipe.hull_plate (8 ore_binding + 4 silicates)
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.ore_binding", 8.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.silicates", 4.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        let did = register_design(
+            &mut w,
+            empire,
+            "scout",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        tool_yard(&mut w, empire, did).unwrap();
+        let sid = build_ship_at_system(&mut w, empire, did, system, 4.0).unwrap();
+        assert!(w.ships.contains_key(&sid));
+        // second build without restock should fail materials
+        assert!(matches!(
+            build_ship_at_system(&mut w, empire, did, system, 1.0).unwrap_err(),
+            HullError::YardMaterials
+        ));
     }
 }
