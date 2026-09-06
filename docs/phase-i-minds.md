@@ -1,14 +1,13 @@
 # Phase I — Minds (schema stub / v2.1)
 
-Status: **schema stubs landed on the Kernel ledger**. Scoring and salt/punish emit are behind feature flags (default off) until Phase B map bits and Phase H knowledge objects exist. CoS owns push; this doc matches locked design decisions.
+Status: **scoring wired against Phase B `sky::MapState` / SystemEntity**. Salt/punish emit remain behind feature flags (default off) until Phase H knowledge objects exist. CoS owns push; this doc matches locked design decisions.
 
 ## Scope
 
 Phase I owns **orders and doctrines**: empire operator-writable doctrine fields, Order entities on the one Kernel ledger, capital same-tick re-score on home-flag drop, and reserved salt/punish/atrocity order types gated by knowledge.
 
-Out of scope for this stub (no-ops / flags):
+Out of scope / still gated:
 
-- Full AI scoring / Expand–Plant emission (needs B map feed/dry/dying/Home-pause bits).
 - Salt/punish emit spam (needs H knowledge objects; Conflict owns typed cruelty events later).
 - Parallel standing math (P owns standing; I **consumes** standing, does not invent a second model).
 - Multiple minds per empire (v1: **one mind per empire**).
@@ -55,7 +54,7 @@ On `HomeFlagClear` (operator or future B collapse path):
 2. **Same tick**, call `World::handle_home_flag_clear(system)` → `on_home_flag_clear`:
    - Clear pause awareness (stub: home-flag clear is the signal today; B will expose a fuse-pause bit).
    - Append `CapitalRescore { system, empire }`.
-   - Call stub `rescore_system` — **no-op** unless `MindsFlags.scoring_enabled`.
+   - Call `rescore_system` — **no-op** unless `MindsFlags.scoring_enabled`; when on, cancels Queued+Ai orders targeting the system and may emit a suggested non-salt Ai order.
 
 Re-score runs **before further AI orders** in that tick once scoring is wired.
 
@@ -65,7 +64,7 @@ Re-score runs **before further AI orders** in that tick once scoring is wired.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `scoring_enabled` | `false` | `rescore_system` / minds tick stub no-op; no Expand/Plant emit |
+| `scoring_enabled` | `false` | `rescore_system` / minds tick no-op; when on, scores known feed/fuse via B MapState |
 | `salt_emit_enabled` | `false` | SaltWorld / PunishSalter / ProsecuteAtrocity not written |
 
 ## Dependence on A / B / H / P
@@ -88,6 +87,6 @@ Re-score runs **before further AI orders** in that tick once scoring is wired.
 
 ## Stubbed vs done
 
-**Done:** docs, doctrine defaults on Globals + EmpireEntity, Order entities on ledger, events, operator doctrine/order hooks, home-flag → CapitalRescore same tick, feature-flagged emit helpers, tests.
+**Done:** docs, doctrine defaults on Globals + EmpireEntity, Order entities on ledger, events, operator doctrine/order hooks, home-flag → CapitalRescore same tick, feature-flagged emit helpers, **scoring against B `MapState` (Feed / DryFuse / HomePaused / Ended / WildernessUnknown)**, same-tick capital rescore cancel+suggest, minds tick ≤1 Ai order/empire, tests.
 
-**Stubbed:** `rescore_system`, minds tick AI emit, `has_knowledge_path` (always false until H), KO weight placeholders, SaltWorld → typed cruelty event body (Conflict later).
+**Stubbed:** `has_knowledge_path` (always false until H), KO weight placeholders, SaltWorld → typed cruelty event body (Conflict later).
