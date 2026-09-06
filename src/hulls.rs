@@ -287,6 +287,12 @@ pub fn tool_yard_at_system(
 /// Spend magazine ammo; errors if empty/unknown.
 
 /// True if ship has `module.weapon_kinetic` on its design and magazine ammo remaining.
+
+/// True if design lists the catalog module id.
+pub fn design_has_module(design: &ShipDesign, module_id: &str) -> bool {
+    design.modules.iter().any(|m| m == module_id)
+}
+
 pub fn can_fire(design: &ShipDesign, ship: &ShipInstance, ammo_id: &str) -> bool {
     design.modules.iter().any(|m| m == "module.weapon_kinetic")
         && ship.magazines.get(ammo_id).copied().unwrap_or(0.0) > 0.0
@@ -645,5 +651,17 @@ mod tests {
             fire_kinetic(&design, ship, "ammo.kinetic").unwrap();
             assert!((ship.magazines.get("ammo.kinetic").copied().unwrap() - 2.0).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn design_has_module_checks_list() {
+        let d = make_design(
+            EntityId(50),
+            "s",
+            vec!["module.engine_chem".into(), "module.sensor_basic".into()],
+        )
+        .unwrap();
+        assert!(design_has_module(&d, "module.sensor_basic"));
+        assert!(!design_has_module(&d, "module.weapon_kinetic"));
     }
 }
