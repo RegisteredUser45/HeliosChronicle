@@ -16,6 +16,10 @@ pub const STANDING_FIRST_CONTACT: i32 = 2;
 pub const STANDING_VIOLENCE_VICTIM: i32 = 25;
 /// Extra mutual standing hit when a ReparationsStub treaty is broken.
 pub const STANDING_REPARATIONS_BREACH: i32 = 10;
+/// Witness standing from a Confession source (stronger than plain confirmed).
+pub const STANDING_CONFESSION: i32 = 20;
+/// Witness standing from a Leak source (between rumor and confirmed).
+pub const STANDING_LEAK: i32 = 12;
 /// Standing delta multiplier numerator when NonAggression treaty holds (half impact).
 pub const NON_AGGRESSION_SOFTEN_NUM: i32 = 1;
 pub const NON_AGGRESSION_SOFTEN_DEN: i32 = 2;
@@ -150,25 +154,63 @@ pub fn apply_event_for_standing(world: &mut World, event: &ChronicleEvent) {
         }
         EventKind::KoConfirmed { ko } => {
             // Every current empire carrier re-scores the upgrade (confirmed weight).
-            let carriers: Vec<EmpireId> = world
-                .knowledge
-                .get(*ko)
-                .map(|k| {
-                    k.carriers
-                        .iter()
-                        .filter_map(|c| match c {
-                            CarrierId::Empire(e) => Some(*e),
-                            _ => None,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            for empire in carriers {
+            for empire in empire_carriers(world, *ko) {
                 apply_witness_from_ko(world, *ko, empire, seq, true);
+            }
+        }
+        EventKind::Confession { ko, .. } => {
+            // Confession is a confirmed source with stronger witness weight (Lead Q2).
+            for empire in empire_carriers(world, *ko) {
+                apply_witness_at_weight(world, *ko, empire, seq, STANDING_CONFESSION);
+            }
+        }
+        EventKind::Leak { ko, .. } => {
+            for empire in empire_carriers(world, *ko) {
+                apply_witness_at_weight(world, *ko, empire, seq, STANDING_LEAK);
             }
         }
         _ => {}
     }
+}
+
+
+fn apply_witness_at_weight(
+    world: &mut World,
+    ko_id: crate::entity::EntityId,
+    empire: EmpireId,
+    reason_seq: u64,
+    weight: i32,
+) {
+    let Some(ko) = world.knowledge.get(ko_id).cloned() else {
+        return;
+    };
+    if ko.payload.who_victim == Some(empire) {
+        return;
+    }
+    let Some(actor) = ko.payload.who_actor else {
+        return;
+    };
+    if actor == empire {
+        return;
+    }
+    let scaled = (-weight).saturating_sub(ko.payload.severity as i32);
+    bump_standing(world, empire, actor, scaled, reason_seq);
+}
+
+fn empire_carriers(world: &World, ko_id: crate::entity::EntityId) -> Vec<EmpireId> {
+    world
+        .knowledge
+        .get(ko_id)
+        .map(|k| {
+            k.carriers
+                .iter()
+                .filter_map(|c| match c {
+                    CarrierId::Empire(e) => Some(*e),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Witness standing: only along knowledge paths; skip if empire is the victim.
@@ -276,4 +318,83 @@ mod tests {
             STANDING_FIRST_CONTACT - STANDING_VIOLENCE_VICTIM / 2
         );
     }
+
+    #[test]
+    fn confession_witness_standing() {
+        use crate::knowledge::{
+            confess_ko, emit_ko, EmitKoParams, KoGrade, KoKind, KoPayload, KoPropagation,
+        };
+        let mut w = World::new(80);
+        let actor = EmpireId(1);
+        let victim = EmpireId(2);
+        let witness = EmpireId(3);
+        let ko = emit_ko(
+            &mut w,
+            EmitKoParams {
+                kind: KoKind::Signal,
+                grade: KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: KoPayload {
+                    who_actor: Some(actor),
+                    who_victim: Some(victim),
+                    system: None,
+                    severity: 0,
+                    target_type: "atrocity".into(),
+                    claim: "did it".into(),
+                },
+                initial_carriers: Default::default(),
+                propagation: KoPropagation::DiplomaticReveal,
+            },
+        );
+        crate::knowledge::acquire_ko(&mut w, witness, ko);
+        // Rumor hit first.
+        assert_eq!(w.standing.get(witness, actor), -STANDING_RUMOR);
+        confess_ko(&mut w, ko, witness);
+        // Confession re-scores at confession weight (absolute apply in handler).
+        assert_eq!(w.standing.get(witness, actor), -STANDING_RUMOR - STANDING_CONFESSION);
+        assert_eq!(
+            w.knowledge.get(ko).unwrap().kind,
+            crate::knowledge::KoKind::ConfessedEvent
+        );
+    }
+
+    #[test]
+    fn extradition_auto_acquires_on_confess() {
+        use crate::contact::{sign_treaty, TreatyClause};
+        use crate::knowledge::{
+            confess_ko, emit_ko, CarrierId, EmitKoParams, KoGrade, KoKind, KoPayload, KoPropagation,
+        };
+        let mut w = World::new(81);
+        let holder = EmpireId(4);
+        let partner = EmpireId(5);
+        let actor = EmpireId(6);
+        sign_treaty(
+            &mut w,
+            holder,
+            partner,
+            vec![TreatyClause::ExtraditionStub],
+        );
+        let ko = emit_ko(
+            &mut w,
+            EmitKoParams {
+                kind: KoKind::Signal,
+                grade: KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: KoPayload {
+                    who_actor: Some(actor),
+                    who_victim: None,
+                    system: None,
+                    severity: 0,
+                    target_type: "crime".into(),
+                    claim: "fugitive".into(),
+                },
+                initial_carriers: Default::default(),
+                propagation: KoPropagation::DiplomaticReveal,
+            },
+        );
+        assert!(confess_ko(&mut w, ko, holder));
+        let carriers = &w.knowledge.get(ko).unwrap().carriers;
+        assert!(carriers.contains(&CarrierId::Empire(partner)));
+    }
+
 }

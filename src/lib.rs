@@ -38,8 +38,7 @@ pub use event::{ChronicleEvent, EventKind, EventLog, DEFAULT_MAX_LOG_EVENTS};
 pub use globals::Globals;
 pub use knowledge::{
     acquire_ko, confirm_ko, emit_ko, inject_rumor, salvage_contact, CarrierId, EmitKoParams,
-    KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation,
-};
+    KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation, confess_ko, leak_ko,};
 pub use lod::{LodHint, LodMode};
 pub use matter::{
     add_deposit, compute_binding_remainder, deposit_counts_as_binding, extract,
@@ -50,7 +49,7 @@ pub use matter::{
 pub use minds::{clamp_doctrine, MindsFlags};
 pub use operator::{Operator, OperatorError};
 pub use politics::{
-    apply_event_for_standing, apply_reparations_breach, emit_salt, StandingStore, STANDING_CONFIRMED, STANDING_FIRST_CONTACT,
+    apply_event_for_standing, apply_reparations_breach, emit_salt, StandingStore, STANDING_CONFESSION, STANDING_CONFIRMED, STANDING_LEAK, STANDING_FIRST_CONTACT,
     STANDING_RUMOR, STANDING_SALT_VICTIM, STANDING_REPARATIONS_BREACH, STANDING_VIOLENCE_VICTIM,
 };
 pub use save::{load_world, save_world, SaveError};

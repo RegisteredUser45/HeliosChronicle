@@ -271,3 +271,61 @@ pub fn inject_rumor(
     }
     ko_id
 }
+
+/// Empire confesses a held KO: grade→Confirmed, kind→ConfessedEvent, emits `Confession`.
+/// ExtraditionStub partners of `by` auto-acquire the KO (diplomatic evidence transfer).
+pub fn confess_ko(world: &mut World, ko_id: EntityId, by: EmpireId) -> bool {
+    if world.knowledge.get(ko_id).is_none() {
+        return false;
+    }
+    acquire_ko(world, by, ko_id);
+    if let Some(ko) = world.knowledge.get_mut(ko_id) {
+        ko.kind = KoKind::ConfessedEvent;
+        ko.grade = KoGrade::Confirmed;
+    }
+    let tick = world.master_tick();
+    let ev = world.log.append(tick, EventKind::Confession { ko: ko_id, by });
+    let chronicle = ev.clone();
+    apply_event_for_standing(world, &chronicle);
+
+    // ExtraditionStub: treaty partners of `by` receive the KO.
+    let partners: Vec<EmpireId> = world
+        .contact
+        .get(by)
+        .map(|c| {
+            c.treaties
+                .iter()
+                .filter(|t| {
+                    t.end_tick.is_none()
+                        && t.clauses
+                            .iter()
+                            .any(|cl| *cl == crate::contact::TreatyClause::ExtraditionStub)
+                })
+                .map(|t| if t.a == by { t.b } else { t.a })
+                .collect()
+        })
+        .unwrap_or_default();
+    for partner in partners {
+        acquire_ko(world, partner, ko_id);
+    }
+    world.recompute_outcome_hash();
+    true
+}
+
+/// Empire leaks a held KO: grade→Confirmed, kind→LeakedEvent, emits `Leak`.
+pub fn leak_ko(world: &mut World, ko_id: EntityId, by: EmpireId) -> bool {
+    if world.knowledge.get(ko_id).is_none() {
+        return false;
+    }
+    acquire_ko(world, by, ko_id);
+    if let Some(ko) = world.knowledge.get_mut(ko_id) {
+        ko.kind = KoKind::LeakedEvent;
+        ko.grade = KoGrade::Confirmed;
+    }
+    let tick = world.master_tick();
+    let ev = world.log.append(tick, EventKind::Leak { ko: ko_id, by });
+    let chronicle = ev.clone();
+    apply_event_for_standing(world, &chronicle);
+    world.recompute_outcome_hash();
+    true
+}
