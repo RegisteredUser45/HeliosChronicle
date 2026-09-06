@@ -2,6 +2,8 @@
 //!
 //! Salt/punish emit stay behind feature flags until H knowledge objects land.
 //! Scoring (this module) consumes Phase B `sky::map_state` bits only — no parallel map fields.
+//! Feed input is C's ledger `binding_remainder` (C owns deposit aggregation via
+//! `matter::reaggregate_*`; I only reads the field — no parallel feed score source).
 //! See `docs/phase-i-minds.md`.
 
 use serde::{Deserialize, Serialize};
@@ -80,6 +82,9 @@ pub fn has_knowledge_path(
     _intent: OrderIntent,
     _target: Option<EntityId>,
 ) -> bool {
+    // Gated until Lead clears real H knowledge paths.
+    // Later: wire via violence/knowledge KO APIs (victim auto-knows own-world
+    // cruelty; witnesses need a KO on a path; rumor→confirmed grades).
     // Placeholder KO grade weights (unused until H wires real paths):
     // const RUMOR_WEIGHT: f64 = 0.25;
     // const CONFIRMED_WEIGHT: f64 = 1.0;
@@ -493,6 +498,7 @@ mod minds_tests {
     use super::*;
     use crate::entity::{EmpireEntity, OrderStatus};
     use crate::globals::Globals;
+    use crate::matter;
     use crate::operator::Operator;
 
     #[test]
@@ -785,6 +791,87 @@ mod minds_tests {
         }
         minds_tick_stub(&mut w);
         assert!(!w.ledger.orders().any(|(_, o)| is_salt_family(o.intent)));
+    }
+
+
+    /// C owns deposit → `binding_remainder` aggregation; I only reads that field
+    /// into `score_system` feed_score (no parallel feed field).
+    #[test]
+    fn matter_drain_updates_binding_remainder_and_feed_score() {
+        let mut w = World::new(57);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.deposits.clear();
+            s.binding_remainder = 0.0;
+            s.depleted = false;
+            s.fuse_end_tick = None;
+            s.fuse_remaining = None;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.home_flag = false;
+            s.is_home_capital = false;
+        }
+
+        matter::add_deposit(
+            &mut w,
+            sys,
+            matter::Deposit::new(
+                "stock.ore_binding",
+                800.0,
+                1.0,
+                matter::ExtractorKind::State,
+            ),
+        )
+        .expect("add binding deposit");
+
+        let rem_before = w.ledger.get(sys).unwrap().binding_remainder;
+        assert!(
+            (rem_before - 800.0).abs() < 1e-9,
+            "C reaggregate must set remainder from deposit; got {rem_before}"
+        );
+        assert_eq!(sky::map_state(w.ledger.get(sys).unwrap()), MapState::Feed);
+
+        let score_before = score_system(&w, empire, sys).expect("score before drain");
+        assert!(score_before.known);
+        assert!(
+            (score_before.feed_score - rem_before).abs() < 1e-9,
+            "Feed feed_score must equal ledger binding_remainder; score={} rem={}",
+            score_before.feed_score,
+            rem_before
+        );
+        assert!(
+            (score_before.binding_remainder - rem_before).abs() < 1e-9,
+            "SystemScore mirrors C remainder field"
+        );
+
+        matter::extract_state(&mut w, sys, 300.0).expect("drain");
+        let rem_after = w.ledger.get(sys).unwrap().binding_remainder;
+        assert!(
+            (rem_after - 500.0).abs() < 1e-9,
+            "C extract must lower remainder; got {rem_after}"
+        );
+        // Stay above dry_threshold so MapState remains Feed (I reads remainder only).
+        assert_eq!(sky::map_state(w.ledger.get(sys).unwrap()), MapState::Feed);
+
+        let score_after = score_system(&w, empire, sys).expect("score after drain");
+        assert!(
+            (score_after.feed_score - rem_after).abs() < 1e-9,
+            "feed_score must track C remainder after drain; score={} rem={}",
+            score_after.feed_score,
+            rem_after
+        );
+        assert!(
+            score_after.feed_score < score_before.feed_score,
+            "drain must lower feed_score"
+        );
+        assert!(
+            (score_after.feed_score - (score_before.feed_score - 300.0)).abs() < 1e-9,
+            "Feed delta must match drained quantity"
+        );
     }
 
     #[test]

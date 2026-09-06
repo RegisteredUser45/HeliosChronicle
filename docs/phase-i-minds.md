@@ -1,6 +1,6 @@
 # Phase I — Minds (schema stub / v2.1)
 
-Status: **scoring wired against Phase B `sky::MapState` / SystemEntity**. Salt/punish emit remain behind feature flags (default off) until Phase H knowledge objects exist. CoS owns push; this doc matches locked design decisions.
+Status: **scoring wired against Phase B `sky::MapState` + Phase C `binding_remainder`**. Salt/punish emit remain behind feature flags (default off) until Lead clears real H knowledge paths. CoS owns push; this doc matches locked design decisions. Baseline tip lineage: `a60ce17` / `79fdd49`.
 
 ## Scope
 
@@ -58,6 +58,16 @@ On `HomeFlagClear` (operator or future B collapse path):
 
 Re-score runs **before further AI orders** in that tick once scoring is wired.
 
+
+## Scoring (B + C)
+
+- Coarse bucket: `sky::map_state(sys)` only — no parallel map bits, no Dying variant.
+- Feed: ledger `binding_remainder` (Phase C aggregates deposits via `matter::reaggregate_*`; I never maintains a second feed number).
+- Fuse: ledger `fuse_*` is physics truth once armed; AI *known* fuse number gated on `surveyed` / fog `surveyed_fuse`.
+- HomePaused: treated as stable until home-flag drop (same-tick `CapitalRescore`).
+- WildernessUnknown: uncertain feed, not infinite.
+- When `scoring_enabled`: cancel Queued+Ai orders on rescore target; emit ≤1 suggested non-salt Ai order per empire per tick.
+
 ## Feature flags
 
 `World.minds_flags: MindsFlags` (default both false):
@@ -72,8 +82,9 @@ Re-score runs **before further AI orders** in that tick once scoring is wired.
 | Phase | What I needs |
 |---|---|
 | **A** Kernel | Ledger, events, operator, tick — **done**; this stub extends them |
-| **B** Sky | Map bits (feed / dry / dying / unknown fuse / Home pause) for scoring |
-| **H** Violence | Knowledge objects + grades for salt/punish gates |
+| **B** Sky | `sky::map_state` buckets (Feed / DryFuse / HomePaused / Ended / WildernessUnknown) — **wired** |
+| **C** Matter | Ledger `binding_remainder` (C aggregates deposits; I **reads only**) — **wired** |
+| **H** Violence | Knowledge objects + grades for salt/punish gates — **gated** (`has_knowledge_path` false until Lead clears) |
 | **P** Politics | Standing from typed events + KO paths; I consumes standing only |
 
 ## Lock compliance
@@ -87,6 +98,6 @@ Re-score runs **before further AI orders** in that tick once scoring is wired.
 
 ## Stubbed vs done
 
-**Done:** docs, doctrine defaults on Globals + EmpireEntity, Order entities on ledger, events, operator doctrine/order hooks, home-flag → CapitalRescore same tick, feature-flagged emit helpers, **scoring against B `MapState` (Feed / DryFuse / HomePaused / Ended / WildernessUnknown)**, same-tick capital rescore cancel+suggest, minds tick ≤1 Ai order/empire, tests.
+**Done:** docs, doctrine defaults on Globals + EmpireEntity, Order entities on ledger, events, operator doctrine/order hooks, home-flag → CapitalRescore same tick, feature-flagged emit helpers, **scoring against B `MapState`**, **feed score from C `binding_remainder`** (matter drain updates score), same-tick capital rescore cancel+suggest, minds tick ≤1 Ai order/empire, tests.
 
-**Stubbed:** `has_knowledge_path` (always false until H), KO weight placeholders, SaltWorld → typed cruelty event body (Conflict later).
+**Stubbed / gated:** `has_knowledge_path` (always false until Lead clears real H paths), `salt_emit_enabled` default off, KO weight placeholders, SaltWorld → typed cruelty event body (Conflict later).
