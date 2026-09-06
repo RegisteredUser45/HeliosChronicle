@@ -38,11 +38,11 @@ Chronicle events: `EmpireSpawned`, `OrderCreated`, `OrderStatusChanged`, `Capita
 ## Emit gates (salt / punish / atrocity)
 
 1. **Feature flag** `MindsFlags.salt_emit_enabled` (default `false`) — until H lands, do not emit salt/punish spam. `try_emit_order` returns `Ok(None)` for SaltWorld / PunishSalter / ProsecuteAtrocity when the flag is off.
-2. When the flag is on, a **knowledge gate stub** (`has_knowledge_path`) still defaults to `false` until H:
-   - Victim auto-knows own-world cruelty (future H path).
-   - Witnesses need a knowledge object (KO) on a path.
-3. **KO grades** rumor → confirmed: confirmed is heavier when gating (stub weight placeholders only; real weights later).
-4. Empty knowledge → **no order**.
+2. When the flag is on, `has_knowledge_path` checks real H/P objects:
+   - Victim auto-knows own-home systems (`home_empire`) and KOs naming them as victim.
+   - Witnesses must **carry** a KO with actor+system matching the order target.
+3. **KO grades** rumor → confirmed: both open the emit gate; confirmed is heavier for future willingness thresholds (weight placeholders retained).
+4. Empty knowledge → **no order**. `salt_emit_enabled` stays **default false**.
 
 `SaltWorld` maps to a typed cruelty event (reserved; Conflict owns event typing later).
 
@@ -84,7 +84,7 @@ Re-score runs **before further AI orders** in that tick once scoring is wired.
 | **A** Kernel | Ledger, events, operator, tick — **done**; this stub extends them |
 | **B** Sky | `sky::map_state` buckets (Feed / DryFuse / HomePaused / Ended / WildernessUnknown) — **wired** |
 | **C** Matter | Ledger `binding_remainder` (C aggregates deposits; I **reads only**) — **wired** |
-| **H** Violence | Knowledge objects + grades for salt/punish gates — **gated** (`has_knowledge_path` false until Lead clears) |
+| **H** Violence | Knowledge objects + grades for salt/punish gates — **path wired**; emit still default-off via `salt_emit_enabled` |
 | **P** Politics | Standing from typed events + KO paths; I consumes standing only |
 
 ## Lock compliance
@@ -100,4 +100,4 @@ Re-score runs **before further AI orders** in that tick once scoring is wired.
 
 **Done:** docs, doctrine defaults on Globals + EmpireEntity, Order entities on ledger, events, operator doctrine/order hooks, home-flag → CapitalRescore same tick, feature-flagged emit helpers, **scoring against B `MapState`**, **feed score from C `binding_remainder`** (matter drain updates score), same-tick capital rescore cancel+suggest, minds tick ≤1 Ai order/empire, tests.
 
-**Stubbed / gated:** `has_knowledge_path` (always false until Lead clears real H paths), `salt_emit_enabled` default off, KO weight placeholders, SaltWorld → typed cruelty event body (Conflict later).
+**Stubbed / gated:** `salt_emit_enabled` default off (Lead: don’t spam salt until cleared), willingness×grade thresholds not yet applied, SaltWorld → typed cruelty event body (Conflict later). `has_knowledge_path` now uses real KO/victim auto-know.

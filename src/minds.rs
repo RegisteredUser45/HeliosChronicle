@@ -72,22 +72,56 @@ pub fn clamp_doctrine(v: f64) -> f64 {
     }
 }
 
-/// Stub knowledge-path gate (H). Defaults to false until knowledge objects exist.
+/// Knowledge-path gate for salt-family orders (H/P Lock 9).
 ///
-/// Future: victim auto-knows own-world; witnesses need a KO on a path.
-/// Rumor→confirmed grades: confirmed heavier when gating (placeholder weights).
+/// - Victim auto-knows cruelty on own worlds / as named victim on a KO payload.
+/// - Witnesses need to **carry** a KO whose payload implicates the act.
+/// - Rumor and confirmed both open the gate; confirmed weighs heavier for
+///   future willingness thresholds (weights below).
+/// - `salt_emit_enabled` remains default **false** — this only defines the path.
 pub fn has_knowledge_path(
-    _world: &World,
-    _empire_id: EntityId,
-    _intent: OrderIntent,
-    _target: Option<EntityId>,
+    world: &World,
+    empire_id: EntityId,
+    intent: OrderIntent,
+    target: Option<EntityId>,
 ) -> bool {
-    // Gated until Lead clears real H knowledge paths.
-    // Later: wire via violence/knowledge KO APIs (victim auto-knows own-world
-    // cruelty; witnesses need a KO on a path; rumor→confirmed grades).
-    // Placeholder KO grade weights (unused until H wires real paths):
-    // const RUMOR_WEIGHT: f64 = 0.25;
-    // const CONFIRMED_WEIGHT: f64 = 1.0;
+    const _RUMOR_WEIGHT: f64 = 0.25;
+    const _CONFIRMED_WEIGHT: f64 = 1.0;
+    let _ = (_RUMOR_WEIGHT, _CONFIRMED_WEIGHT, intent);
+
+    let eid = EmpireId(empire_id.0);
+
+    // Victim auto-know: own capital/home system targeted.
+    if let Some(sys_id) = target {
+        if let Some(sys) = world.ledger.get(sys_id) {
+            if sys.home_empire == Some(eid) {
+                return true;
+            }
+        }
+    }
+
+    // Victim auto-know / witness path: any KO naming this empire as victim,
+    // or carried by this empire with actor/victim/system matching the order.
+    for (_id, ko) in world.knowledge.iter() {
+        let payload = &ko.payload;
+        let victim_match = payload.who_victim == Some(eid);
+        let carries = ko.carriers.contains(&crate::knowledge::CarrierId::Empire(eid));
+        let system_match = match (target, payload.system) {
+            (Some(t), Some(s)) => t == s,
+            (None, _) => true, // no target → any relevant KO may qualify
+            (Some(_), None) => false,
+        };
+        let actor_present = payload.who_actor.is_some();
+
+        if victim_match && (system_match || target.is_none()) {
+            return true;
+        }
+        if carries && actor_present && system_match {
+            // Witness with a KO on a path (rumor or confirmed both emit-eligible;
+            // confirmed is heavier when willingness thresholds are applied later).
+            return true;
+        }
+    }
     false
 }
 
@@ -875,6 +909,99 @@ mod minds_tests {
     }
 
     #[test]
+
+    #[test]
+    fn knowledge_path_victim_auto_know_own_home() {
+        let mut w = World::new(70);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.home_empire = Some(EmpireId(empire.0));
+            s.is_home_capital = true;
+        }
+        assert!(has_knowledge_path(
+            &w,
+            empire,
+            OrderIntent::ProsecuteAtrocity,
+            Some(sys),
+        ));
+        // salt_emit still default off → no order written
+        assert!(!w.minds_flags.salt_emit_enabled);
+        let r = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::SaltWorld,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn knowledge_path_witness_needs_carried_ko() {
+        let mut w = World::new(71);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let actor = EmpireId(99);
+        let victim = EmpireId(88);
+        // No KO yet
+        assert!(!has_knowledge_path(
+            &w,
+            empire,
+            OrderIntent::PunishSalter,
+            Some(sys),
+        ));
+        let ko = crate::knowledge::emit_ko(
+            &mut w,
+            crate::knowledge::EmitKoParams {
+                kind: crate::knowledge::KoKind::Signal,
+                grade: crate::knowledge::KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: crate::knowledge::KoPayload {
+                    who_actor: Some(actor),
+                    who_victim: Some(victim),
+                    system: Some(sys),
+                    severity: 5,
+                    target_type: "world".into(),
+                    claim: "salt".into(),
+                },
+                initial_carriers: Default::default(),
+                propagation: crate::knowledge::KoPropagation::Broadcast,
+            },
+        );
+        // Still no — empire does not carry the KO
+        assert!(!has_knowledge_path(
+            &w,
+            empire,
+            OrderIntent::PunishSalter,
+            Some(sys),
+        ));
+        assert!(crate::knowledge::acquire_ko(&mut w, EmpireId(empire.0), ko));
+        assert!(has_knowledge_path(
+            &w,
+            empire,
+            OrderIntent::PunishSalter,
+            Some(sys),
+        ));
+        // Enabling salt_emit allows emit once path exists
+        w.minds_flags.salt_emit_enabled = true;
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::PunishSalter,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("path + flag → order");
+        assert_eq!(
+            w.ledger.get_order(id).unwrap().intent,
+            OrderIntent::PunishSalter
+        );
+    }
+
     fn wilderness_unknown_not_infinite() {
         let mut w = World::new(56);
         let empire = *w.ledger.empires().next().unwrap().0;
