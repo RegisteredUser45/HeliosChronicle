@@ -1,0 +1,43 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# Build / deps
+node_modules/
+dist/
+build/
+target/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.bin
+
+# Logs / local
+*.log
+.tmp/
+.cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Game / sim local dumps
+saves/
+*.sav
+replay/
