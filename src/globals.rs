@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cosmology::embedded_catalog;
+
 /// One master era length; dry-time, fuse length, and research segment time
 /// are editable ratios of that master length.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -16,16 +18,80 @@ pub struct Globals {
     pub research_segment_ratio: f64,
     /// Coarse LOD step size in master-tick units (Issue 10).
     pub coarse_dt: u64,
+
+    // --- Phase B sky ---
+    /// Binding remainder below this → B depletes and arms fuse.
+    #[serde(default = "default_dry_threshold")]
+    pub dry_threshold: f64,
+    /// Binding floor for C (mirrors catalog default; operator-editable).
+    #[serde(default = "default_binding_floor")]
+    pub binding_floor: f64,
+    /// Lock 4: capital home systems pause fuse while flag held.
+    #[serde(default = "default_true")]
+    pub home_pause_enabled: bool,
+    /// Target count of live systems (incl. paused capitals; excl. ended).
+    #[serde(default = "default_live_band")]
+    pub live_system_band: u32,
+    /// Operator-editable spawn weights over the fixed catalog spawn table.
+    /// Empty → use embedded catalog `spawn_binding_table.entries`.
+    #[serde(default)]
+    pub spawn_weights: Vec<(String, f64)>,
+
+    // --- Phase I doctrine galaxy defaults (operator-editable) ---
+    /// Default salt willingness [0,1] (default 0.15).
+    #[serde(default = "default_salt_willingness")]
+    pub salt_willingness: f64,
+    /// Default punishment willingness [0,1] (default 0.55).
+    #[serde(default = "default_punishment_willingness")]
+    pub punishment_willingness: f64,
+    /// Default evacuate-vs-die-in-place bias [0,1] (default 0.6).
+    #[serde(default = "default_evacuate_vs_die_in_place")]
+    pub evacuate_vs_die_in_place: f64,
+}
+
+fn default_dry_threshold() -> f64 {
+    1.0
+}
+fn default_binding_floor() -> f64 {
+    1.0
+}
+fn default_true() -> bool {
+    true
+}
+fn default_live_band() -> u32 {
+    4
+}
+fn default_salt_willingness() -> f64 {
+    0.15
+}
+fn default_punishment_willingness() -> f64 {
+    0.55
+}
+fn default_evacuate_vs_die_in_place() -> f64 {
+    0.6
 }
 
 impl Default for Globals {
     fn default() -> Self {
+        let catalog = embedded_catalog();
         Self {
             master_era_length: 10_000,
             dry_time_ratio: 1.0,
             fuse_length_ratio: 0.25,
             research_segment_ratio: 0.1,
             coarse_dt: 10,
+            dry_threshold: default_dry_threshold(),
+            binding_floor: if catalog.binding_floor_default > 0.0 {
+                catalog.binding_floor_default
+            } else {
+                default_binding_floor()
+            },
+            home_pause_enabled: true,
+            live_system_band: default_live_band(),
+            spawn_weights: catalog.spawn_weights(),
+            salt_willingness: default_salt_willingness(),
+            punishment_willingness: default_punishment_willingness(),
+            evacuate_vs_die_in_place: default_evacuate_vs_die_in_place(),
         }
     }
 }
@@ -41,5 +107,14 @@ impl Globals {
 
     pub fn research_segment_ticks(&self) -> u64 {
         ((self.master_era_length as f64) * self.research_segment_ratio).round() as u64
+    }
+
+    /// Effective spawn weight table (operator override or catalog default).
+    pub fn effective_spawn_weights(&self) -> Vec<(String, f64)> {
+        if self.spawn_weights.is_empty() {
+            embedded_catalog().spawn_weights()
+        } else {
+            self.spawn_weights.clone()
+        }
     }
 }

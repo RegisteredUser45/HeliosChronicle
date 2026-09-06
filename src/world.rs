@@ -1,13 +1,17 @@
-//! World state: master clock, seed/RNG, ledger, chronicle, LOD.
+//! World state: master clock, seed/RNG, ledger, chronicle, LOD, G/P stores.
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 
+use crate::contact::EmpireContactStore;
 use crate::entity::{EntityId, EntityLedger};
 use crate::event::{EventKind, EventLog};
 use crate::globals::Globals;
+use crate::knowledge::KnowledgeStore;
 use crate::lod::LodMode;
+use crate::minds::MindsFlags;
+use crate::politics::StandingStore;
 
 /// Serializable snapshot of the world (RNG reconstructed from seed + draws).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,6 +24,18 @@ pub struct World {
     pub lod: LodMode,
     pub ledger: EntityLedger,
     pub log: EventLog,
+    /// Knowledge objects (Lock 9) — G/H/P.
+    #[serde(default)]
+    pub knowledge: KnowledgeStore,
+    /// Per-empire fog + treaty stubs (Phase G).
+    #[serde(default)]
+    pub contact: EmpireContactStore,
+    /// Directed standing a→b (Phase P).
+    #[serde(default)]
+    pub standing: StandingStore,
+    /// Phase I minds feature flags (default both off).
+    #[serde(default)]
+    pub minds_flags: MindsFlags,
     /// Fingerprint of ledger + tick for cheap determinism checks.
     pub outcome_hash: u64,
 }
@@ -39,9 +55,21 @@ impl World {
             lod: LodMode::Fine,
             ledger: EntityLedger::new(),
             log: EventLog::new(),
+            knowledge: KnowledgeStore::new(),
+            contact: EmpireContactStore::new(),
+            standing: StandingStore::new(),
+            minds_flags: MindsFlags::default(),
             outcome_hash: 0,
         };
         world.log.append(0, EventKind::WorldCreated { seed });
+
+        // Seed one empire from galaxy doctrine defaults (Phase I).
+        {
+            let eid = world.ledger.spawn_empire(&world.globals, Some("seed".into()));
+            world
+                .log
+                .append(0, EventKind::EmpireSpawned { empire: eid });
+        }
 
         // Seed surface: deterministic initial systems from RNG.
         let n = 2 + (world.rng_u64() % 3); // 2..4 systems
@@ -231,10 +259,19 @@ impl World {
             sys.home_flag.hash(&mut h);
         }
         self.log.len().hash(&mut h);
+        // G/P fingerprint: KO count + standing + fog empire count
+        self.knowledge.len().hash(&mut h);
+        self.standing.fingerprint().hash(&mut h);
+        self.contact.empire_count().hash(&mut h);
         self.outcome_hash = h.finish();
     }
 
     pub fn outcome_hash(&self) -> u64 {
         self.outcome_hash
+    }
+
+    /// Phase I: same-tick capital re-score hook after HomeFlagClear.
+    pub fn handle_home_flag_clear(&mut self, system_id: crate::entity::EntityId) {
+        crate::minds::on_home_flag_clear(self, system_id);
     }
 }

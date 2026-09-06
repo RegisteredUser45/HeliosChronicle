@@ -8,7 +8,7 @@ The simulation is the product. The operator is optional. The tick and the editor
 
 See [STATEMENT.md](STATEMENT.md) for the full project statement, [LOCKS.md](LOCKS.md) for frozen issue resolutions, and [PHASES.md](PHASES.md) for the build order.
 
-## Phase A — Kernel (current)
+## Phase A — Kernel (landed)
 
 Rust / Cargo library (`helios_chronicle`) + thin binary (`helios`).
 
@@ -22,6 +22,25 @@ Rust / Cargo library (`helios_chronicle`) + thin binary (`helios`).
 | Operator R/W hooks | Done |
 | Stub LOD (Coarse \| Fine) | Done |
 | Galaxy / sky hooks | Stubs only (Phase B) |
+
+## Phase I — Minds (schema stub)
+
+Doctrine fields + Order entities on the **same Kernel ledger**. Scoring and salt/punish emit are **feature-flagged off** until B map bits and H knowledge objects land.
+
+| Capability | Status |
+|---|---|
+| Empire doctrine (salt / punish / evacuate bias) | Schema + defaults + operator mutate |
+| Order entities on ledger | Schema + create via operator / `try_emit_order` |
+| SaltWorld / PunishSalter / ProsecuteAtrocity | Reserved; emit blocked by default flags + KO stub |
+| Capital same-tick re-score on HomeFlagClear | Hook + `CapitalRescore` event; `rescore_system` no-op |
+| AI Expand/Plant scoring | Flagged off (`scoring_enabled`) |
+
+Design notes: [docs/phase-i-minds.md](docs/phase-i-minds.md).
+
+
+## Phase G/H/P
+
+Contact (G) and Politics (P) stubs: knowledge objects, fog/first_contact, directed standing. Notes: [docs/GHP-design-notes.md](docs/GHP-design-notes.md). **H** waits on D/F.
 
 ### Build
 
@@ -74,13 +93,16 @@ Or in tests: `same_seed_same_outcomes` / `helios_chronicle::verify_determinism(s
 src/
   lib.rs          # public API + unit tests
   bin/helios.rs   # headless CLI
-  globals.rs      # master era + editable ratios (Issue 5)
+  globals.rs      # master era + editable ratios + doctrine galaxy defaults
   lod.rs          # Coarse | Fine, quiet/hot hints (Issue 10)
-  entity.rs       # SystemEntity stubs + EntityLedger
+  entity.rs       # System / Empire / Order entities + EntityLedger
   event.rs        # typed EventKind + append-only EventLog
-  world.rs        # seed/RNG, tick, outcome hash
-  operator.rs     # inspect / set_field / arm_fuse
+  world.rs        # seed/RNG, tick, outcome hash, minds flags
+  minds.rs        # Phase I doctrine helpers, try_emit_order, capital rescore
+  operator.rs     # inspect / set_field / arm_fuse / doctrine / issue_order
   save.rs         # JSON save_world / load_world
+docs/
+  phase-i-minds.md
 ```
 
 ### Fuse + coarse LOD note

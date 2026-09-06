@@ -2,9 +2,10 @@
 
 use thiserror::Error;
 
-use crate::entity::{EntityId, SystemEntity};
+use crate::entity::{EntityId, OrderIntent, OrderSource, SystemEntity};
 use crate::event::EventKind;
 use crate::lod::LodHint;
+use crate::minds::{self, set_empire_doctrine_field};
 use crate::world::World;
 
 #[derive(Debug, Error)]
@@ -15,6 +16,8 @@ pub enum OperatorError {
     UnknownField(String),
     #[error("invalid value for field '{field}': {reason}")]
     InvalidValue { field: String, reason: String },
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Read/write surface over the shared ledger. Mutations always append events.
@@ -38,13 +41,23 @@ impl<'a> Operator<'a> {
         self.world.ledger().systems().map(|(id, _)| *id).collect()
     }
 
-    /// Mutate a named field on a system entity. Every successful mutation is logged.
+    /// Mutate a named field on a system entity, or empire doctrine by id.
+    /// Every successful mutation is logged.
     pub fn set_field(
         &mut self,
         id: EntityId,
         field: &str,
         value: &str,
     ) -> Result<(), OperatorError> {
+        // Doctrine fields may target an empire id when no system matches.
+        if matches!(
+            field,
+            "salt_willingness" | "punishment_willingness" | "evacuate_vs_die_in_place"
+        ) && self.world.ledger().get(id).is_none()
+        {
+            return self.set_empire_doctrine(id, field, value);
+        }
+
         let tick = self.world.master_tick();
         let entity = self
             .world
@@ -120,10 +133,16 @@ impl<'a> Operator<'a> {
                 entity.lod_hint = v;
                 (old, format!("{:?}", v))
             }
+            "salt_willingness" | "punishment_willingness" | "evacuate_vs_die_in_place" => {
+                return Err(OperatorError::UnknownField(format!(
+                    "{field} (use empire id / set_empire_doctrine)"
+                )));
+            }
             other => return Err(OperatorError::UnknownField(other.into())),
         };
 
         // Special-case home flag events for Phase B stubs.
+        let cleared_home = field == "home_flag" && new != "true";
         let home_event = if field == "home_flag" {
             if new == "true" {
                 Some(EventKind::HomeFlagSet { system: id })
@@ -148,7 +167,66 @@ impl<'a> Operator<'a> {
             self.world.log_mut().append(tick, ev);
         }
 
+        // Phase I: same-tick capital re-score after HomeFlagClear.
+        if cleared_home {
+            self.world.handle_home_flag_clear(id);
+        }
+
         Ok(())
+    }
+
+    /// Set an empire doctrine field (clamped 0..1). Logs OperatorMutation.
+    pub fn set_empire_doctrine(
+        &mut self,
+        empire_id: EntityId,
+        field: &str,
+        value: &str,
+    ) -> Result<(), OperatorError> {
+        let v: f64 = value.parse().map_err(|_| OperatorError::InvalidValue {
+            field: field.into(),
+            reason: "expected f64".into(),
+        })?;
+        let tick = self.world.master_tick();
+        let (old, new) = set_empire_doctrine_field(&mut self.world.ledger, empire_id, field, v)
+            .map_err(|e| {
+                if e.contains("not found") {
+                    OperatorError::NotFound(empire_id)
+                } else {
+                    OperatorError::UnknownField(e)
+                }
+            })?;
+        self.world.log_mut().append(
+            tick,
+            EventKind::OperatorMutation {
+                entity: empire_id,
+                field: field.into(),
+                old,
+                new,
+            },
+        );
+        self.world.recompute_outcome_hash();
+        Ok(())
+    }
+
+    /// Issue an order through try_emit_order (respects salt emit flags / KO gate).
+    pub fn issue_order(
+        &mut self,
+        empire_id: EntityId,
+        intent: &str,
+        target: Option<EntityId>,
+    ) -> Result<Option<EntityId>, OperatorError> {
+        let intent = OrderIntent::parse(intent).ok_or_else(|| OperatorError::InvalidValue {
+            field: "intent".into(),
+            reason: format!("unknown intent '{intent}'"),
+        })?;
+        minds::try_emit_order(
+            self.world,
+            empire_id,
+            intent,
+            target,
+            OrderSource::Operator,
+        )
+        .map_err(OperatorError::Other)
     }
 
     /// Force-arm a fuse ending at an absolute master tick (stub for B).

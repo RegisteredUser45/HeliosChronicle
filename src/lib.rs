@@ -1,21 +1,44 @@
-//! Helios Chronicle — Phase A kernel.
+//! Helios Chronicle — Phase A kernel + G/P stubs + Phase I minds + B sky.
 //!
 //! Tick loop, deterministic seed, event log, save/load, entity ledger,
-//! operator R/W, and stub LOD. Galaxy/sky hooks are stubs for Phase B.
+//! operator R/W, stub LOD, knowledge objects, contact fog, standing,
+//! Phase I doctrine/orders, and Phase B sky helpers. H waits on D/F.
 
+pub mod contact;
+pub mod cosmology;
 pub mod entity;
 pub mod event;
 pub mod globals;
+pub mod knowledge;
 pub mod lod;
+pub mod minds;
 pub mod operator;
+pub mod politics;
 pub mod save;
+pub mod sky;
 pub mod world;
 
-pub use entity::{EntityId, EntityLedger, SystemEntity};
+pub use contact::{
+    first_contact, push_fine_hot, EmpireContact, EmpireContactStore, FogState, SystemFogEntry,
+    Treaty, TreatyClause,
+};
+pub use entity::{
+    EmpireEntity, EmpireId, EntityId, EntityLedger, OrderEntity, OrderIntent, OrderSource,
+    OrderStatus, SystemEntity,
+};
 pub use event::{ChronicleEvent, EventKind, EventLog};
 pub use globals::Globals;
+pub use knowledge::{
+    acquire_ko, confirm_ko, emit_ko, inject_rumor, salvage_contact, CarrierId, EmitKoParams,
+    KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation,
+};
 pub use lod::{LodHint, LodMode};
+pub use minds::{clamp_doctrine, MindsFlags};
 pub use operator::{Operator, OperatorError};
+pub use politics::{
+    apply_event_for_standing, emit_salt, StandingStore, STANDING_CONFIRMED, STANDING_FIRST_CONTACT,
+    STANDING_RUMOR, STANDING_SALT_VICTIM, STANDING_VIOLENCE_VICTIM,
+};
 pub use save::{load_world, save_world, SaveError};
 pub use world::World;
 
@@ -97,6 +120,9 @@ mod tests {
         assert_eq!(restored.rng_draws, draws_before);
         assert_eq!(restored.ledger, w.ledger);
         assert_eq!(restored.globals, w.globals);
+        assert_eq!(restored.knowledge, w.knowledge);
+        assert_eq!(restored.contact, w.contact);
+        assert_eq!(restored.standing, w.standing);
 
         // Continuing from two independent restores stays deterministic.
         let mut a: World = serde_json::from_str(&raw).unwrap();
@@ -185,5 +211,247 @@ mod tests {
         let from = w.master_tick();
         w.tick(1);
         assert_eq!(w.master_tick(), from + w.globals().coarse_dt);
+    }
+
+    // --- Phase I stubs ---
+
+    #[test]
+    fn phase_i_doctrine_defaults() {
+        let w = World::new(42);
+        assert!((w.globals().salt_willingness - 0.15).abs() < f64::EPSILON);
+        assert!((w.globals().punishment_willingness - 0.55).abs() < f64::EPSILON);
+        assert!((w.globals().evacuate_vs_die_in_place - 0.6).abs() < f64::EPSILON);
+        assert_eq!(w.ledger().empires_len(), 1);
+        let emp = w.ledger().empires().next().unwrap().1;
+        assert!((emp.salt_willingness - 0.15).abs() < f64::EPSILON);
+        assert!((emp.punishment_willingness - 0.55).abs() < f64::EPSILON);
+        assert!((emp.evacuate_vs_die_in_place - 0.6).abs() < f64::EPSILON);
+        assert!(w.log().events().iter().any(|e| matches!(
+            e.kind,
+            EventKind::EmpireSpawned { .. }
+        )));
+        assert!(!w.minds_flags.scoring_enabled);
+        assert!(!w.minds_flags.salt_emit_enabled);
+    }
+
+    #[test]
+    fn phase_i_order_on_ledger() {
+        let mut w = World::new(10);
+        let empire = *w.ledger().empires().next().unwrap().0;
+        let order_id = {
+            let mut op = Operator::new(&mut w);
+            op.issue_order(empire, "expand_survey", None)
+                .unwrap()
+                .expect("non-salt order written")
+        };
+        assert_eq!(w.ledger().orders_len(), 1);
+        let ord = w.ledger().get_order(order_id).unwrap();
+        assert_eq!(ord.intent, OrderIntent::ExpandSurvey);
+        assert_eq!(ord.status, OrderStatus::Queued);
+        assert_eq!(ord.source, OrderSource::Operator);
+    }
+
+    #[test]
+    fn phase_i_salt_blocked_by_default_flags() {
+        let mut w = World::new(12);
+        let empire = *w.ledger().empires().next().unwrap().0;
+        {
+            let mut op = Operator::new(&mut w);
+            let r = op.issue_order(empire, "salt_world", None).unwrap();
+            assert!(r.is_none());
+            let r = op.issue_order(empire, "punish_salter", None).unwrap();
+            assert!(r.is_none());
+            let r = op.issue_order(empire, "prosecute_atrocity", None).unwrap();
+            assert!(r.is_none());
+        }
+        assert_eq!(w.ledger().orders_len(), 0);
+    }
+
+    #[test]
+    fn phase_i_home_flag_clear_capital_rescore_same_tick() {
+        let mut w = World::new(13);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        {
+            let mut op = Operator::new(&mut w);
+            op.set_field(sys, "is_home_capital", "true").unwrap();
+            op.set_field(sys, "home_flag", "true").unwrap();
+        }
+        let tick_before = w.master_tick();
+        {
+            let mut op = Operator::new(&mut w);
+            op.set_field(sys, "home_flag", "false").unwrap();
+        }
+        assert_eq!(w.master_tick(), tick_before);
+        let events = w.log().events();
+        let clear_pos = events
+            .iter()
+            .position(|e| matches!(e.kind, EventKind::HomeFlagClear { system } if system == sys))
+            .expect("HomeFlagClear");
+        let rescore_pos = events
+            .iter()
+            .position(|e| {
+                matches!(
+                    &e.kind,
+                    EventKind::CapitalRescore { system, .. } if *system == sys
+                )
+            })
+            .expect("CapitalRescore");
+        assert!(
+            rescore_pos > clear_pos,
+            "CapitalRescore must follow HomeFlagClear same tick"
+        );
+        assert_eq!(events[clear_pos].at_tick, events[rescore_pos].at_tick);
+    }
+
+    #[test]
+    fn phase_i_operator_mutates_empire_doctrine() {
+        let mut w = World::new(14);
+        let empire = *w.ledger().empires().next().unwrap().0;
+        {
+            let mut op = Operator::new(&mut w);
+            op.set_empire_doctrine(empire, "salt_willingness", "0.9")
+                .unwrap();
+        }
+        assert!(
+            (w.ledger().get_empire(empire).unwrap().salt_willingness - 0.9).abs() < f64::EPSILON
+        );
+        assert!(w.log().events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::OperatorMutation { entity, field, new, .. }
+                if *entity == empire && field == "salt_willingness" && new == "0.9"
+        )));
+    }
+
+    // --- Phase G/P stub tests ---
+
+    #[test]
+    fn ko_emit_acquire_confirm_grades() {
+        use std::collections::BTreeSet;
+        let mut w = World::new(100);
+        let actor = EmpireId(1);
+        let victim = EmpireId(2);
+        let witness = EmpireId(3);
+        let sys = *w.ledger().systems().next().unwrap().0;
+
+        let ko = emit_ko(
+            &mut w,
+            EmitKoParams {
+                kind: KoKind::Signal,
+                grade: KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: KoPayload {
+                    who_actor: Some(actor),
+                    who_victim: Some(victim),
+                    system: Some(sys),
+                    severity: 2,
+                    target_type: "colony".into(),
+                    claim: "strike reported".into(),
+                },
+                initial_carriers: BTreeSet::new(),
+                propagation: KoPropagation::Broadcast,
+            },
+        );
+        assert_eq!(w.knowledge.get(ko).unwrap().grade, KoGrade::Rumor);
+        assert!(acquire_ko(&mut w, witness, ko));
+        assert!(confirm_ko(&mut w, ko));
+        assert_eq!(w.knowledge.get(ko).unwrap().grade, KoGrade::Confirmed);
+    }
+
+    #[test]
+    fn first_contact_emits_and_updates_fog() {
+        let mut w = World::new(101);
+        let a = EmpireId(10);
+        let b = EmpireId(20);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        first_contact(&mut w, a, b, Some(sys));
+        assert!(w.log().events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::FirstContact { a: x, b: y } if *x == a && *y == b
+        )));
+        assert!(w.contact.get(a).unwrap().fog.known_systems.contains_key(&sys));
+        assert_eq!(w.standing.get(a, b), STANDING_FIRST_CONTACT);
+        assert_eq!(w.standing.get(b, a), STANDING_FIRST_CONTACT);
+    }
+
+    #[test]
+    fn victim_standing_on_salt_without_ko_witness_needs_acquire() {
+        use std::collections::BTreeSet;
+        let mut w = World::new(102);
+        let actor = EmpireId(1);
+        let victim = EmpireId(2);
+        let witness = EmpireId(3);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        emit_salt(&mut w, actor, victim, sys);
+        assert_eq!(w.standing.get(victim, actor), -STANDING_SALT_VICTIM);
+        assert_eq!(w.standing.get(witness, actor), 0);
+        let ko = emit_ko(
+            &mut w,
+            EmitKoParams {
+                kind: KoKind::RefugeeWave,
+                grade: KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: KoPayload {
+                    who_actor: Some(actor),
+                    who_victim: Some(victim),
+                    system: Some(sys),
+                    severity: 0,
+                    target_type: "world".into(),
+                    claim: "salt refugees".into(),
+                },
+                initial_carriers: BTreeSet::new(),
+                propagation: KoPropagation::EvacConvoy,
+            },
+        );
+        assert_eq!(w.standing.get(witness, actor), 0);
+        acquire_ko(&mut w, witness, ko);
+        assert_eq!(w.standing.get(witness, actor), -STANDING_RUMOR);
+        confirm_ko(&mut w, ko);
+        assert_eq!(w.standing.get(witness, actor), -STANDING_CONFIRMED);
+    }
+
+    #[test]
+    fn push_fine_hot_sets_lod_hint() {
+        let mut w = World::new(103);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        w.ledger.get_mut(sys).unwrap().lod_hint = LodHint::Quiet;
+        push_fine_hot(&mut w, sys);
+        assert_eq!(w.ledger().get(sys).unwrap().lod_hint, LodHint::Hot);
+    }
+
+    #[test]
+    fn salvage_always_grants_wreck_ko() {
+        let mut w = World::new(104);
+        let salvager = EmpireId(7);
+        let sys = *w.ledger().systems().next().unwrap().0;
+        let ko = salvage_contact(&mut w, salvager, sys, "derelict hull");
+        let obj = w.knowledge.get(ko).unwrap();
+        assert_eq!(obj.kind, KoKind::Wreck);
+        assert_eq!(obj.grade, KoGrade::Confirmed);
+        assert!(obj.carriers.contains(&CarrierId::Empire(salvager)));
+        assert_eq!(w.ledger().get(sys).unwrap().lod_hint, LodHint::Hot);
+    }
+
+    #[test]
+    fn inject_rumor_is_rumor_grade() {
+        let mut w = World::new(105);
+        let empire = EmpireId(9);
+        let ko = inject_rumor(
+            &mut w,
+            KoKind::LeakedEvent,
+            KoPayload {
+                who_actor: Some(EmpireId(1)),
+                who_victim: Some(EmpireId(2)),
+                system: None,
+                severity: 1,
+                target_type: "fleet".into(),
+                claim: "operator rumor".into(),
+            },
+            Some(empire),
+        );
+        assert_eq!(w.knowledge.get(ko).unwrap().grade, KoGrade::Rumor);
+        assert_eq!(
+            w.knowledge.get(ko).unwrap().propagation,
+            KoPropagation::OperatorInject
+        );
     }
 }

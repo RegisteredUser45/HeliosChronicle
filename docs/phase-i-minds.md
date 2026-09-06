@@ -1,0 +1,93 @@
+# Phase I — Minds (schema stub / v2.1)
+
+Status: **schema stubs landed on the Kernel ledger**. Scoring and salt/punish emit are behind feature flags (default off) until Phase B map bits and Phase H knowledge objects exist. CoS owns push; this doc matches locked design decisions.
+
+## Scope
+
+Phase I owns **orders and doctrines**: empire operator-writable doctrine fields, Order entities on the one Kernel ledger, capital same-tick re-score on home-flag drop, and reserved salt/punish/atrocity order types gated by knowledge.
+
+Out of scope for this stub (no-ops / flags):
+
+- Full AI scoring / Expand–Plant emission (needs B map feed/dry/dying/Home-pause bits).
+- Salt/punish emit spam (needs H knowledge objects; Conflict owns typed cruelty events later).
+- Parallel standing math (P owns standing; I **consumes** standing, does not invent a second model).
+- Multiple minds per empire (v1: **one mind per empire**).
+
+## Doctrine schema + defaults
+
+Galaxy defaults live on `Globals` (editable). Per-empire fields live on `EmpireEntity` (operator-writable). All clamped to `[0.0, 1.0]`.
+
+| Field | Default | Meaning (stub) |
+|---|---|---|
+| `salt_willingness` | `0.15` | Willingness to issue SaltWorld when gated |
+| `punishment_willingness` | `0.55` | Willingness to PunishSalter / ProsecuteAtrocity |
+| `evacuate_vs_die_in_place` | `0.6` | Bias toward Evacuate vs hold |
+
+`EmpireEntity::from_defaults(id, &Globals)` copies galaxy defaults onto a new empire. Operator may mutate per-empire values via `set_empire_doctrine` / `set_field`.
+
+## Order ledger shape
+
+Orders are **entities on the ONE Kernel `EntityLedger`** — same id space as systems and empires. There is **no parallel Orders store**.
+
+- `OrderIntent`: `ExpandSurvey`, `ClaimFeed`, `PlantCity`, `PlantYard`, `StripMine`, `Fortify`, `Evacuate`, `Abandon`, `ProsecuteAtrocity`, `SaltWorld`, `PunishSalter`
+- `OrderStatus`: `Queued`, `Active`, `Done`, `Cancelled`
+- `OrderSource`: `Ai`, `Operator`
+- `OrderEntity`: `id`, `empire_id`, `intent`, `target_ref: Option<EntityId>` (system/body stub), `status`, `created_tick`, `updated_tick`, `source`
+
+Chronicle events: `EmpireSpawned`, `OrderCreated`, `OrderStatusChanged`, `CapitalRescore`.
+
+## Emit gates (salt / punish / atrocity)
+
+1. **Feature flag** `MindsFlags.salt_emit_enabled` (default `false`) — until H lands, do not emit salt/punish spam. `try_emit_order` returns `Ok(None)` for SaltWorld / PunishSalter / ProsecuteAtrocity when the flag is off.
+2. When the flag is on, a **knowledge gate stub** (`has_knowledge_path`) still defaults to `false` until H:
+   - Victim auto-knows own-world cruelty (future H path).
+   - Witnesses need a knowledge object (KO) on a path.
+3. **KO grades** rumor → confirmed: confirmed is heavier when gating (stub weight placeholders only; real weights later).
+4. Empty knowledge → **no order**.
+
+`SaltWorld` maps to a typed cruelty event (reserved; Conflict owns event typing later).
+
+## Capital same-tick re-score
+
+On `HomeFlagClear` (operator or future B collapse path):
+
+1. Append `HomeFlagClear`.
+2. **Same tick**, call `World::handle_home_flag_clear(system)` → `on_home_flag_clear`:
+   - Clear pause awareness (stub: home-flag clear is the signal today; B will expose a fuse-pause bit).
+   - Append `CapitalRescore { system, empire }`.
+   - Call stub `rescore_system` — **no-op** unless `MindsFlags.scoring_enabled`.
+
+Re-score runs **before further AI orders** in that tick once scoring is wired.
+
+## Feature flags
+
+`World.minds_flags: MindsFlags` (default both false):
+
+| Flag | Default | Effect |
+|---|---|---|
+| `scoring_enabled` | `false` | `rescore_system` / minds tick stub no-op; no Expand/Plant emit |
+| `salt_emit_enabled` | `false` | SaltWorld / PunishSalter / ProsecuteAtrocity not written |
+
+## Dependence on A / B / H / P
+
+| Phase | What I needs |
+|---|---|
+| **A** Kernel | Ledger, events, operator, tick — **done**; this stub extends them |
+| **B** Sky | Map bits (feed / dry / dying / unknown fuse / Home pause) for scoring |
+| **H** Violence | Knowledge objects + grades for salt/punish gates |
+| **P** Politics | Standing from typed events + KO paths; I consumes standing only |
+
+## Lock compliance
+
+- One ledger for tick + operator (no parallel order store).
+- Operator may rewrite doctrine and issue orders; mutations are events.
+- Home/capital suns politically anchored; home-flag drop triggers same-tick capital re-score.
+- Polities remember cruelty when they **know** about it (KO gates; flags off until H).
+- Same standing model for AI and hand — I does not invent parallel math.
+- One mind per empire in v1.
+
+## Stubbed vs done
+
+**Done:** docs, doctrine defaults on Globals + EmpireEntity, Order entities on ledger, events, operator doctrine/order hooks, home-flag → CapitalRescore same tick, feature-flagged emit helpers, tests.
+
+**Stubbed:** `rescore_system`, minds tick AI emit, `has_knowledge_path` (always false until H), KO weight placeholders, SaltWorld → typed cruelty event body (Conflict later).

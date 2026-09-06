@@ -1,0 +1,386 @@
+{
+  "$schema_note": "Helios Chronicle cosmology catalog \u2014 Galaxy (B/C) owns rows. Empire refs ids for D/E/F; never mutates. Lock 1: binding is row boolean. Lock 6: full binding spawn day one. FREEZE: dotted kind.name (Lead-locked). Underscore forms are NOT canonical.",
+  "version": 4,
+  "id_convention": {
+    "form": "kind.snake_name (dotted)",
+    "kinds": [
+      "stock",
+      "rare",
+      "fuel",
+      "recipe",
+      "module",
+      "facility"
+    ],
+    "stability": "add-only preferred; no renames/deletes of frozen ids; Lead + Empire sync for exceptions",
+    "binding": "boolean field on stock/rare rows"
+  },
+  "binding_floor_default": 1.0,
+  "stocks": [
+    {
+      "id": "stock.ore_common",
+      "name": "Common ore",
+      "binding": false,
+      "kind": "raw",
+      "notes": "Non-binding filler"
+    },
+    {
+      "id": "stock.ore_binding",
+      "name": "Binding ore",
+      "binding": true,
+      "kind": "raw",
+      "notes": "Explicit day-one binding sample"
+    },
+    {
+      "id": "stock.volatiles",
+      "name": "Volatiles",
+      "binding": true,
+      "kind": "raw",
+      "notes": "Fuel + v1 LS drain with organics"
+    },
+    {
+      "id": "stock.silicates",
+      "name": "Silicates",
+      "binding": true,
+      "kind": "raw"
+    },
+    {
+      "id": "stock.fissiles",
+      "name": "Fissiles",
+      "binding": true,
+      "kind": "raw"
+    },
+    {
+      "id": "stock.organics",
+      "name": "Organics",
+      "binding": true,
+      "kind": "raw",
+      "notes": "v1 LS drain with volatiles"
+    },
+    {
+      "id": "stock.rare_earth",
+      "name": "Rare earths",
+      "binding": true,
+      "kind": "raw"
+    },
+    {
+      "id": "stock.antimatter_precursor",
+      "name": "Antimatter precursor",
+      "binding": true,
+      "kind": "raw"
+    }
+  ],
+  "rares": [
+    {
+      "id": "rare.catalyst",
+      "name": "Catalyst",
+      "binding": true,
+      "stock_ref": "stock.rare_earth"
+    }
+  ],
+  "fuels": [
+    {
+      "id": "fuel.chemical",
+      "name": "Chemical propellant",
+      "tier": 0,
+      "inputs": [
+        "stock.volatiles"
+      ]
+    },
+    {
+      "id": "fuel.fission",
+      "name": "Fission fuel",
+      "tier": 1,
+      "inputs": [
+        "stock.fissiles"
+      ]
+    },
+    {
+      "id": "fuel.fusion",
+      "name": "Fusion fuel",
+      "tier": 2,
+      "inputs": [
+        "stock.volatiles",
+        "stock.rare_earth"
+      ]
+    },
+    {
+      "id": "fuel.antimatter",
+      "name": "Antimatter",
+      "tier": 3,
+      "inputs": [
+        "stock.antimatter_precursor"
+      ]
+    }
+  ],
+  "recipes": [
+    {
+      "id": "recipe.fuel_chem_refine",
+      "name": "Chemical fuel refine",
+      "bom": [
+        {
+          "stock": "stock.volatiles",
+          "qty": 5
+        }
+      ],
+      "outputs": [
+        {
+          "fuel": "fuel.chemical",
+          "qty": 1
+        }
+      ]
+    },
+    {
+      "id": "recipe.fuel_fission_pellet",
+      "name": "Fission pellet",
+      "bom": [
+        {
+          "stock": "stock.fissiles",
+          "qty": 3
+        }
+      ],
+      "outputs": [
+        {
+          "fuel": "fuel.fission",
+          "qty": 1
+        }
+      ]
+    },
+    {
+      "id": "recipe.fuel_fusion_pellet",
+      "name": "Fusion pellet",
+      "bom": [
+        {
+          "stock": "stock.volatiles",
+          "qty": 4
+        },
+        {
+          "stock": "stock.rare_earth",
+          "qty": 1
+        }
+      ],
+      "outputs": [
+        {
+          "fuel": "fuel.fusion",
+          "qty": 1
+        }
+      ]
+    },
+    {
+      "id": "recipe.antimatter_synth",
+      "name": "Antimatter synth",
+      "bom": [
+        {
+          "stock": "stock.antimatter_precursor",
+          "qty": 2
+        },
+        {
+          "rare": "rare.catalyst",
+          "qty": 1
+        }
+      ],
+      "outputs": [
+        {
+          "fuel": "fuel.antimatter",
+          "qty": 1
+        }
+      ]
+    },
+    {
+      "id": "recipe.hull_plate",
+      "name": "Hull plate",
+      "bom": [
+        {
+          "stock": "stock.ore_binding",
+          "qty": 8
+        },
+        {
+          "stock": "stock.silicates",
+          "qty": 4
+        }
+      ]
+    },
+    {
+      "id": "recipe.power_core_basic",
+      "name": "Basic power core",
+      "bom": [
+        {
+          "stock": "stock.ore_binding",
+          "qty": 6
+        },
+        {
+          "stock": "stock.rare_earth",
+          "qty": 2
+        }
+      ]
+    },
+    {
+      "id": "recipe.yard_mk1",
+      "name": "Yard Mk1",
+      "bom": [
+        {
+          "stock": "stock.ore_binding",
+          "qty": 20
+        },
+        {
+          "stock": "stock.silicates",
+          "qty": 8
+        }
+      ],
+      "notes": "E recipe gate / facility.yard"
+    },
+    {
+      "id": "recipe.habitat_seal_mk1",
+      "name": "Habitat seal Mk1",
+      "bom": [
+        {
+          "stock": "stock.organics",
+          "qty": 10
+        },
+        {
+          "stock": "stock.volatiles",
+          "qty": 5
+        },
+        {
+          "stock": "stock.ore_binding",
+          "qty": 4
+        }
+      ],
+      "notes": "E recipe gate"
+    },
+    {
+      "id": "recipe.mine_auto_mk1",
+      "name": "Automated mine Mk1",
+      "bom": [
+        {
+          "stock": "stock.ore_binding",
+          "qty": 15
+        },
+        {
+          "stock": "stock.rare_earth",
+          "qty": 3
+        }
+      ],
+      "notes": "automation_active / tomb mining"
+    },
+    {
+      "id": "recipe.tankage_mk1",
+      "name": "Tankage Mk1",
+      "bom": [
+        {
+          "stock": "stock.ore_binding",
+          "qty": 12
+        },
+        {
+          "stock": "stock.silicates",
+          "qty": 6
+        }
+      ],
+      "notes": "Fuel/antimatter logistics"
+    }
+  ],
+  "modules": [
+    {
+      "id": "module.engine_chem",
+      "name": "Chemical engine",
+      "fuel_tier": "fuel.chemical"
+    },
+    {
+      "id": "module.engine_fission",
+      "name": "Fission engine",
+      "fuel_tier": "fuel.fission"
+    },
+    {
+      "id": "module.engine_fusion",
+      "name": "Fusion engine",
+      "fuel_tier": "fuel.fusion"
+    },
+    {
+      "id": "module.engine_antimatter",
+      "name": "Antimatter engine",
+      "fuel_tier": "fuel.antimatter"
+    },
+    {
+      "id": "module.tankage",
+      "name": "Tankage",
+      "bom_recipe": "recipe.tankage_mk1"
+    },
+    {
+      "id": "module.crew_habitat",
+      "name": "Crew habitat"
+    },
+    {
+      "id": "module.cargo_hold",
+      "name": "Cargo hold"
+    },
+    {
+      "id": "module.sensor_basic",
+      "name": "Basic sensor"
+    },
+    {
+      "id": "module.weapon_kinetic",
+      "name": "Kinetic weapon",
+      "notes": "Reserved"
+    }
+  ],
+  "facilities": [
+    {
+      "id": "facility.lab",
+      "name": "Lab"
+    },
+    {
+      "id": "facility.yard",
+      "name": "Yard",
+      "bom_recipe": "recipe.yard_mk1"
+    },
+    {
+      "id": "facility.habitat_seal",
+      "name": "Habitat seal",
+      "bom_recipe": "recipe.habitat_seal_mk1"
+    },
+    {
+      "id": "facility.mine_auto",
+      "name": "Automated mine",
+      "bom_recipe": "recipe.mine_auto_mk1"
+    }
+  ],
+  "life_support_v1": {
+    "notes": "D drains these stocks directly; no supply_* ids",
+    "consumes": [
+      "stock.organics",
+      "stock.volatiles"
+    ]
+  },
+  "spawn_binding_table": {
+    "notes": "Lock 6: all binding:true stocks; weights operator settings",
+    "entries": [
+      {
+        "stock": "stock.ore_binding",
+        "weight": 40
+      },
+      {
+        "stock": "stock.volatiles",
+        "weight": 30
+      },
+      {
+        "stock": "stock.silicates",
+        "weight": 25
+      },
+      {
+        "stock": "stock.fissiles",
+        "weight": 12
+      },
+      {
+        "stock": "stock.organics",
+        "weight": 15
+      },
+      {
+        "stock": "stock.rare_earth",
+        "weight": 8
+      },
+      {
+        "stock": "stock.antimatter_precursor",
+        "weight": 3
+      }
+    ]
+  }
+}
