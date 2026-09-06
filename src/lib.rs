@@ -26,8 +26,9 @@ pub mod research;
 pub mod hulls;
 
 pub use contact::{
-    break_treaty, empire_contact_active, first_contact, grant_fog, push_fine_hot, sign_treaty,
-    upgrade_fog, EmpireContact, EmpireContactStore, FogState, SystemFogEntry, Treaty, TreatyClause,
+    break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, push_fine_hot,
+    sign_contract, sign_treaty, upgrade_fog, Contract, ContractKind, EmpireContact,
+    EmpireContactStore, FogState, SystemFogEntry, Treaty, TreatyClause,
 };
 pub use entity::{
     BodyEntity, EmpireEntity, EmpireId, EntityId, EntityLedger, EnvLayers, OrderEntity,

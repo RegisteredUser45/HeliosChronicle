@@ -56,11 +56,43 @@ pub struct Treaty {
     pub end_tick: Option<u64>,
 }
 
+
+
+/// Narrower than treaties: freight / salvage / hire / survey charter (G owns record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractKind {
+    Freight,
+    SalvageRights,
+    MercenaryHire,
+    SurveyCharter,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Contract {
+    pub id: EntityId,
+    pub a: EmpireId,
+    pub b: EmpireId,
+    pub kind: ContractKind,
+    pub start_tick: u64,
+    pub end_tick: Option<u64>,
+    pub defaulted: bool,
+}
+
+impl EmpireContact {
+    /// Active (non-defaulted) contracts for this empire.
+    pub fn active_contracts(&self) -> impl Iterator<Item = &Contract> {
+        self.contracts.iter().filter(|c| !c.defaulted)
+    }
+}
+
 /// Per-empire contact registry entry.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EmpireContact {
     pub fog: FogState,
     pub treaties: Vec<Treaty>,
+    #[serde(default)]
+    pub contracts: Vec<Contract>,
 }
 
 /// Empire contact / fog registry on World.
@@ -68,6 +100,7 @@ pub struct EmpireContact {
 pub struct EmpireContactStore {
     pub empires: BTreeMap<EmpireId, EmpireContact>,
     next_treaty_id: u64,
+    next_contract_id: u64,
 }
 
 impl EmpireContactStore {
@@ -303,6 +336,75 @@ pub fn empire_contact_active(world: &World, empire: EmpireId) -> bool {
         .unwrap_or(false)
 }
 
+
+/// Sign a contract between two empires (G instrument; Matter/Hulls fulfill later).
+pub fn sign_contract(
+    world: &mut World,
+    a: EmpireId,
+    b: EmpireId,
+    kind: ContractKind,
+) -> EntityId {
+    let tick = world.master_tick();
+    let id = EntityId(world.contact.next_contract_id);
+    world.contact.next_contract_id = world.contact.next_contract_id.saturating_add(1);
+    let contract = Contract {
+        id,
+        a,
+        b,
+        kind,
+        start_tick: tick,
+        end_tick: None,
+        defaulted: false,
+    };
+    world.contact.ensure(a).contracts.push(contract.clone());
+    world.contact.ensure(b).contracts.push(contract);
+    push_contact_hot_empires(world, a, b);
+    world.recompute_outcome_hash();
+    id
+}
+
+/// Mark contract defaulted; emit `ContractDefault` for P standing.
+pub fn default_contract(world: &mut World, contract_id: EntityId) -> bool {
+    let tick = world.master_tick();
+    let mut parties: Option<(EmpireId, EmpireId)> = None;
+    for contact in world.contact.empires.values_mut() {
+        if let Some(c) = contact.contracts.iter_mut().find(|c| c.id == contract_id) {
+            if c.defaulted {
+                return false;
+            }
+            c.defaulted = true;
+            c.end_tick = Some(tick);
+            parties = Some((c.a, c.b));
+        }
+    }
+    if let Some((a, b)) = parties {
+        // Mirror defaulted flag on both copies
+        for party in [a, b] {
+            if let Some(c) = world.contact.empires.get_mut(&party) {
+                if let Some(con) = c.contracts.iter_mut().find(|c| c.id == contract_id) {
+                    con.defaulted = true;
+                    con.end_tick = Some(tick);
+                }
+            }
+        }
+        push_contact_hot_empires(world, a, b);
+        let ev = world.log.append(
+            tick,
+            EventKind::ContractDefault {
+                a,
+                b,
+                contract_id,
+            },
+        );
+        let chronicle = ev.clone();
+        apply_event_for_standing(world, &chronicle);
+        world.recompute_outcome_hash();
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,4 +457,20 @@ mod tests {
         assert!(empire_contact_active(&w, a));
         assert_eq!(w.ledger().get(sys).unwrap().lod_hint, crate::lod::LodHint::Hot);
     }
+
+    #[test]
+    fn sign_and_default_contract() {
+        let mut w = World::new(20);
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        let id = sign_contract(&mut w, a, b, ContractKind::Freight);
+        assert_eq!(w.contact.get(a).unwrap().active_contracts().count(), 1);
+        assert!(default_contract(&mut w, id));
+        assert_eq!(w.contact.get(a).unwrap().active_contracts().count(), 0);
+        assert!(w.log().events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::ContractDefault { contract_id, .. } if *contract_id == id
+        )));
+    }
+
 }
