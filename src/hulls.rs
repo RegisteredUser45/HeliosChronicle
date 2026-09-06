@@ -291,6 +291,17 @@ pub fn tool_yard_at_system(
 /// True if design lists the catalog module id.
 
 /// True if design has `module.sensor_basic` and ship is not wrecked.
+
+/// Stub cargo capacity: 10 per `module.cargo_hold` on the design.
+pub fn cargo_capacity(design: &ShipDesign) -> f64 {
+    design
+        .modules
+        .iter()
+        .filter(|m| *m == "module.cargo_hold")
+        .count() as f64
+        * 10.0
+}
+
 pub fn can_sense(design: &ShipDesign, ship: &ShipInstance) -> bool {
     design_has_module(design, "module.sensor_basic") && ship.damage < 1.0
 }
@@ -686,5 +697,22 @@ mod tests {
         let d2 = make_design(EntityId(62), "blind", vec!["module.engine_chem".into()]).unwrap();
         let s2 = spawn_instance(EntityId(63), &d2, 1.0);
         assert!(!can_sense(&d2, &s2));
+    }
+
+    #[test]
+    fn cargo_capacity_counts_holds() {
+        let d0 = make_design(EntityId(70), "a", vec!["module.engine_chem".into()]).unwrap();
+        assert_eq!(cargo_capacity(&d0), 0.0);
+        let d1 = make_design(
+            EntityId(71),
+            "b",
+            vec![
+                "module.engine_chem".into(),
+                "module.cargo_hold".into(),
+                "module.cargo_hold".into(),
+            ],
+        )
+        .unwrap();
+        assert!((cargo_capacity(&d1) - 20.0).abs() < 1e-9);
     }
 }

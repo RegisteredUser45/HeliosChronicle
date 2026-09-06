@@ -455,6 +455,22 @@ impl<'a> Operator<'a> {
 
 
 
+
+    /// Cargo capacity from design cargo_hold modules.
+    pub fn ship_cargo_capacity(&self, ship_id: EntityId) -> Result<f64, OperatorError> {
+        let ship = self
+            .world
+            .ships
+            .get(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        let design = self
+            .world
+            .ship_designs
+            .get(&ship.design_id)
+            .ok_or(OperatorError::NotFound(ship.design_id))?;
+        Ok(crate::hulls::cargo_capacity(design))
+    }
+
     /// Whether a ship can sense (sensor module + not wrecked).
     pub fn ship_can_sense(&self, ship_id: EntityId) -> Result<bool, OperatorError> {
         let ship = self
