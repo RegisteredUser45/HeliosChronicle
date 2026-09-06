@@ -67,6 +67,10 @@ Ai `OrderIntent::Evacuate` with a system target calls `execute_evacuate_intent` 
 
 Ai `OrderIntent::ExpandSurvey` with a system target calls `execute_expand_survey_intent` → H `sensors::sense_system`, which refreshes/creates the empire's fog last-known for that system. Parallel to Ai Evacuate → D. `salt_emit_enabled` stays default **false**.
 
+## ClaimFeed execution (B)
+
+Ai `OrderIntent::ClaimFeed` with a system target calls `execute_claim_feed_intent` → B `sky::claim_system` (sets `claimed`, ending wilderness immortality) then H `sensors::sense_system` so the empire gains fog on the claimed system. Parallel to Ai Evacuate → D and Ai ExpandSurvey → H. `salt_emit_enabled` stays default **false**.
+
 ## LOD-aware minds tick (Issue 10)
 
 Under `LodMode::Coarse`, `minds_tick_stub` only emits for empires that need attention (`empire_needs_minds_tick`: Hot-hint system, or known DryFuse / HomePaused / Ended). Fine LOD still evaluates every empire. ≤1 Ai order per empire per tick; salt family never from scoring. **Frontier:** unknown systems are candidates only when `suggested == ExpandSurvey` (so ExpandSurvey can auto-fire); known systems keep prior scoring behavior.

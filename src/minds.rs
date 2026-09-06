@@ -282,6 +282,23 @@ pub fn execute_expand_survey_intent(
     crate::sensors::sense_system(world, EmpireId(empire_id.0), system_id);
 }
 
+/// Apply ClaimFeed intent via B `sky::claim_system` + H fog refresh.
+///
+/// Parallel to Ai Evacuate → D and Ai ExpandSurvey → H. Sets `sys.claimed`
+/// (ends wilderness immortality per Lock 3) and opens knowledge via
+/// `sensors::sense_system`. Returns whether the claim succeeded.
+pub fn execute_claim_feed_intent(
+    world: &mut World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) -> bool {
+    let ok = sky::claim_system(world, system_id);
+    if ok {
+        crate::sensors::sense_system(world, EmpireId(empire_id.0), system_id);
+    }
+    ok
+}
+
 /// Try to create an order on the ledger.
 ///
 /// Salt-family intents return `Ok(None)` when `salt_emit_enabled` is false, or
@@ -344,6 +361,12 @@ pub fn try_emit_order(
     if matches!(intent, OrderIntent::ExpandSurvey) && matches!(source, OrderSource::Ai) {
         if let Some(sys) = target_ref {
             execute_expand_survey_intent(world, empire_id, sys);
+        }
+    }
+    // Ai ClaimFeed → B claim_system (ends wilderness immortality) + fog.
+    if matches!(intent, OrderIntent::ClaimFeed) && matches!(source, OrderSource::Ai) {
+        if let Some(sys) = target_ref {
+            let _ = execute_claim_feed_intent(world, empire_id, sys);
         }
     }
     Ok(Some(id))
@@ -1574,6 +1597,58 @@ mod minds_tests {
                 .contains_key(&sys),
             "Ai ExpandSurvey must call sense_system and add fog"
         );
+    }
+
+    #[test]
+    fn ai_claim_feed_claims_system() {
+        let mut w = World::new(132);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        // Wilderness unclaimed → immortal until ClaimFeed.
+        let sys = w.ledger.spawn_wilderness_system();
+        {
+            let s = w.ledger.get(sys).unwrap();
+            assert!(!s.claimed);
+            assert!(s.is_wilderness_immortal());
+        }
+        // Contact registry present but no fog yet.
+        w.contact.ensure(EmpireId(empire.0));
+        assert!(
+            !w.contact
+                .get(EmpireId(empire.0))
+                .unwrap()
+                .fog
+                .known_systems
+                .contains_key(&sys)
+        );
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::ClaimFeed,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("claim feed order");
+        assert_eq!(
+            w.ledger.get_order(id).unwrap().intent,
+            OrderIntent::ClaimFeed
+        );
+        let s = w.ledger.get(sys).unwrap();
+        assert!(s.claimed, "Ai ClaimFeed must set claimed via claim_system");
+        assert!(
+            !s.is_wilderness_immortal(),
+            "claim ends wilderness immortality"
+        );
+        assert!(
+            w.contact
+                .get(EmpireId(empire.0))
+                .unwrap()
+                .fog
+                .known_systems
+                .contains_key(&sys),
+            "Ai ClaimFeed must refresh fog via sense_system"
+        );
+        assert!(!w.minds_flags.salt_emit_enabled);
     }
 
     #[test]
