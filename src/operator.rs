@@ -457,6 +457,22 @@ impl<'a> Operator<'a> {
 
 
 
+
+    /// Whether ship crew meets design requirement.
+    pub fn ship_crew_ok(&self, ship_id: EntityId) -> Result<bool, OperatorError> {
+        let ship = self
+            .world
+            .ships
+            .get(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        let design = self
+            .world
+            .ship_designs
+            .get(&ship.design_id)
+            .ok_or(OperatorError::NotFound(ship.design_id))?;
+        Ok(crate::hulls::crew_ok(design, ship))
+    }
+
     /// Transfer fuel between two ships (same fuel_tier).
     pub fn transfer_ship_fuel(
         &mut self,

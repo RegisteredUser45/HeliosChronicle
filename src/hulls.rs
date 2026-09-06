@@ -133,6 +133,12 @@ pub fn make_design(
 }
 
 /// F motion gate: wrong fuel tier or empty tank ⇒ no move (B owns motion).
+
+/// True if instance crew meets design crew_req (undermanned ⇒ no move assist).
+pub fn crew_ok(design: &ShipDesign, ship: &ShipInstance) -> bool {
+    ship.crew + 1e-12 >= design.crew_req
+}
+
 pub fn can_move(design: &ShipDesign, instance: &ShipInstance) -> bool {
     instance.design_id == design.id
         && instance.fuel_tier == design.fuel_tier
@@ -750,5 +756,19 @@ mod tests {
             transfer_fuel(&mut a, &mut b, 1.0).unwrap_err(),
             HullError::DesignFuelMismatch
         ));
+    }
+
+    #[test]
+    fn crew_ok_respects_req() {
+        let d = make_design(
+            EntityId(90),
+            "c",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        let mut s = spawn_instance(EntityId(91), &d, 1.0);
+        assert!(crew_ok(&d, &s));
+        s.crew = 0.0;
+        assert!(!crew_ok(&d, &s));
     }
 }
