@@ -1,0 +1,25 @@
+[package]
+name = "helios_chronicle"
+version = "0.1.0"
+edition = "2021"
+description = "Helios Chronicle — Aurora-class space-empire simulation (Phase A kernel)"
+license = "MIT"
+default-run = "helios"
+
+[lib]
+name = "helios_chronicle"
+path = "src/lib.rs"
+
+[[bin]]
+name = "helios"
+path = "src/bin/helios.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = { version = "0.8", features = ["std_rng"] }
+clap = { version = "4", features = ["derive"] }
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
