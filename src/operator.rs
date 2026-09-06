@@ -453,6 +453,33 @@ impl<'a> Operator<'a> {
         Ok(())
     }
 
+
+    /// Fire ship kinetic weapon (spends magazine).
+    pub fn fire_ship_kinetic(
+        &mut self,
+        ship_id: EntityId,
+        ammo_id: &str,
+    ) -> Result<f64, OperatorError> {
+        let design_id = self
+            .world
+            .ships
+            .get(&ship_id)
+            .map(|s| s.design_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        let design = self
+            .world
+            .ship_designs
+            .get(&design_id)
+            .ok_or(OperatorError::NotFound(design_id))?
+            .clone();
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        crate::hulls::fire_kinetic(&design, ship, ammo_id).map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Spend ship magazine ammo.
     pub fn spend_ship_magazine(
         &mut self,

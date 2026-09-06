@@ -285,6 +285,22 @@ pub fn tool_yard_at_system(
 /// Load magazine ammo on a ship (catalog id → qty). Additive.
 
 /// Spend magazine ammo; errors if empty/unknown.
+
+/// True if ship has `module.weapon_kinetic` on its design and magazine ammo remaining.
+pub fn can_fire(design: &ShipDesign, ship: &ShipInstance, ammo_id: &str) -> bool {
+    design.modules.iter().any(|m| m == "module.weapon_kinetic")
+        && ship.magazines.get(ammo_id).copied().unwrap_or(0.0) > 0.0
+        && ship.damage < 1.0
+}
+
+/// Fire once: requires can_fire, spends 1.0 ammo.
+pub fn fire_kinetic(design: &ShipDesign, ship: &mut ShipInstance, ammo_id: &str) -> Result<f64, HullError> {
+    if !can_fire(design, ship, ammo_id) {
+        return Err(HullError::InsufficientFuel);
+    }
+    spend_magazine(ship, ammo_id, 1.0)
+}
+
 pub fn spend_magazine(ship: &mut ShipInstance, ammo_id: &str, qty: f64) -> Result<f64, HullError> {
     if ammo_id.is_empty() {
         return Err(HullError::UnknownAmmo(ammo_id.into()));
@@ -600,5 +616,34 @@ mod tests {
         load_magazine(&mut s, "ammo.kinetic", 5.0).unwrap();
         assert!((spend_magazine(&mut s, "ammo.kinetic", 2.0).unwrap() - 3.0).abs() < 1e-9);
         assert!(matches!(spend_magazine(&mut s, "ammo.kinetic", 9.0).unwrap_err(), HullError::InsufficientFuel));
+    }
+
+    #[test]
+    fn fire_kinetic_needs_weapon_and_ammo() {
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(41);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.weapon_kinetic", "seg.basic_lab", "seg.yard", "seg.tankage"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        let did = register_design(
+            &mut w,
+            empire,
+            "gun",
+            vec!["module.engine_chem".into(), "module.weapon_kinetic".into()],
+        )
+        .unwrap();
+        tool_yard(&mut w, empire, did).unwrap();
+        let sid = build_ship(&mut w, empire, did, 2.0).unwrap();
+        let design = w.ship_designs.get(&did).unwrap().clone();
+        {
+            let ship = w.ships.get_mut(&sid).unwrap();
+            assert!(!can_fire(&design, ship, "ammo.kinetic"));
+            load_magazine(ship, "ammo.kinetic", 3.0).unwrap();
+            assert!(can_fire(&design, ship, "ammo.kinetic"));
+            fire_kinetic(&design, ship, "ammo.kinetic").unwrap();
+            assert!((ship.magazines.get("ammo.kinetic").copied().unwrap() - 2.0).abs() < 1e-9);
+        }
     }
 }
