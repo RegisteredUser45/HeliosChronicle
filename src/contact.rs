@@ -544,6 +544,61 @@ pub fn decay_fleet_fog(world: &mut World, observer: EmpireId, factor: f64) {
     world.recompute_outcome_hash();
 }
 
+
+/// True if a and b share a non-defaulted active contract of `kind`.
+pub fn has_active_contract(
+    world: &World,
+    a: EmpireId,
+    b: EmpireId,
+    kind: ContractKind,
+) -> bool {
+    let Some(ca) = world.contact.get(a) else {
+        return false;
+    };
+    ca.contracts.iter().any(|c| {
+        !c.defaulted
+            && c.end_tick.is_none()
+            && c.kind == kind
+            && ((c.a == a && c.b == b) || (c.a == b && c.b == a))
+    })
+}
+
+/// OpenPassage: traveler may freely enter systems associated with sovereign's fog capitals.
+/// Stub: true when an active OpenPassage treaty exists between the pair (symmetric).
+pub fn open_passage_allows(world: &World, traveler: EmpireId, sovereign: EmpireId) -> bool {
+    if traveler == sovereign {
+        return true;
+    }
+    has_clause(world, traveler, sovereign, TreatyClause::OpenPassage)
+}
+
+/// Fulfill SalvageRights: client (`a`) gets wreck KO via salvage_contact; both get fog on system.
+pub fn fulfill_salvage_rights(
+    world: &mut World,
+    contract_id: EntityId,
+    wreck_system: EntityId,
+    claim: impl Into<String>,
+) -> Option<EntityId> {
+    let claim = claim.into();
+    let mut parties: Option<(EmpireId, EmpireId)> = None;
+    for contact in world.contact.empires.values() {
+        if let Some(con) = contact.contracts.iter().find(|c| c.id == contract_id) {
+            if con.defaulted || con.end_tick.is_some() || con.kind != ContractKind::SalvageRights {
+                return None;
+            }
+            parties = Some((con.a, con.b));
+            break;
+        }
+    }
+    let (a, b) = parties?;
+    let ko = crate::knowledge::salvage_contact(world, a, wreck_system, claim);
+    grant_fog(world, a, wreck_system);
+    grant_fog(world, b, wreck_system);
+    push_contact_hot_empires(world, a, b);
+    world.recompute_outcome_hash();
+    Some(ko)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,6 +774,30 @@ mod tests {
         let u1 = w.contact.get(e).unwrap().fog.known_fleets[&fleet].uncertainty;
         assert!(u1 > u0);
         assert!(u1 <= 1.0);
+    }
+
+
+    #[test]
+    fn open_passage_and_salvage_rights() {
+        let mut w = World::new(100);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        assert!(!open_passage_allows(&w, a, b));
+        sign_treaty(&mut w, a, b, vec![TreatyClause::OpenPassage]);
+        assert!(open_passage_allows(&w, a, b));
+        assert!(open_passage_allows(&w, b, a));
+        assert!(open_passage_allows(&w, a, a));
+
+        let id = sign_contract(&mut w, a, b, ContractKind::SalvageRights);
+        assert!(has_active_contract(&w, a, b, ContractKind::SalvageRights));
+        let ko = fulfill_salvage_rights(&mut w, id, system, "rights salvage").unwrap();
+        assert!(w.knowledge.get(ko).is_some());
+        assert!(w.contact.get(a).unwrap().fog.known_systems.contains_key(&system));
+        assert!(w.contact.get(b).unwrap().fog.known_systems.contains_key(&system));
+        // Wrong kind rejected.
+        let freight = sign_contract(&mut w, a, b, ContractKind::Freight);
+        assert!(fulfill_salvage_rights(&mut w, freight, system, "nope").is_none());
     }
 
 }
