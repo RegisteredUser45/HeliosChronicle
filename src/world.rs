@@ -304,9 +304,27 @@ impl World {
             body.layers.toxins_fallout.to_bits().hash(&mut h);
             body.layers.biosphere.to_bits().hash(&mut h);
         }
+        // Phase I ledger fingerprint (empires / orders).
+        self.ledger.empires_len().hash(&mut h);
+        for (id, emp) in self.ledger.empires() {
+            id.0.hash(&mut h);
+            emp.salt_willingness.to_bits().hash(&mut h);
+            emp.punishment_willingness.to_bits().hash(&mut h);
+            emp.evacuate_vs_die_in_place.to_bits().hash(&mut h);
+            emp.unlocked_segments.len().hash(&mut h);
+        }
+        self.ledger.orders_len().hash(&mut h);
+        for (id, ord) in self.ledger.orders() {
+            id.0.hash(&mut h);
+            ord.empire_id.0.hash(&mut h);
+            ord.intent.as_str().hash(&mut h);
+            ord.status.as_str().hash(&mut h);
+            ord.created_tick.hash(&mut h);
+        }
         self.globals.envelope.pressure.min.to_bits().hash(&mut h);
         self.globals.envelope.pressure.max.to_bits().hash(&mut h);
         self.log.len().hash(&mut h);
+        self.log.dropped().hash(&mut h);
         // G/P fingerprint: KO count + standing + fog empire count
         self.knowledge.len().hash(&mut h);
         self.standing.fingerprint().hash(&mut h);

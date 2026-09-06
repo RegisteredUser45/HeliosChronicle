@@ -33,7 +33,7 @@ pub use entity::{
     BodyEntity, EmpireEntity, EmpireId, EntityId, EntityLedger, EnvLayers, OrderEntity,
     OrderIntent, OrderSource, OrderStatus, SystemEntity,
 };
-pub use event::{ChronicleEvent, EventKind, EventLog};
+pub use event::{ChronicleEvent, EventKind, EventLog, DEFAULT_MAX_LOG_EVENTS};
 pub use globals::Globals;
 pub use knowledge::{
     acquire_ko, confirm_ko, emit_ko, inject_rumor, salvage_contact, CarrierId, EmitKoParams,
@@ -145,6 +145,8 @@ mod tests {
         assert_eq!(restored.ledger().len(), systems_before);
         assert_eq!(restored.rng_draws, draws_before);
         assert_eq!(restored.ledger, w.ledger);
+        assert_eq!(restored.ledger.empires_len(), w.ledger.empires_len());
+        assert_eq!(restored.ledger.orders_len(), w.ledger.orders_len());
         assert_eq!(restored.globals, w.globals);
         assert_eq!(restored.knowledge, w.knowledge);
         assert_eq!(restored.contact, w.contact);
@@ -258,6 +260,75 @@ mod tests {
         )));
         assert!(!w.minds_flags.scoring_enabled);
         assert!(!w.minds_flags.salt_emit_enabled);
+    }
+
+    #[test]
+    fn event_log_soft_cap_drops_oldest_keeps_seq() {
+        let mut log = EventLog::with_max_events(3);
+        for i in 0..5 {
+            log.append(i, EventKind::TickAdvanced {
+                from: i,
+                to: i + 1,
+                dt: 1,
+                lod: "Fine".into(),
+            });
+        }
+        assert_eq!(log.len(), 3);
+        assert_eq!(log.dropped(), 2);
+        assert_eq!(log.next_seq(), 5);
+        let seqs: Vec<_> = log.events().iter().map(|e| e.seq).collect();
+        assert_eq!(seqs, vec![2, 3, 4]);
+        // Unlimited still grows.
+        let mut open = EventLog::with_max_events(0);
+        for i in 0..10 {
+            open.append(i, EventKind::WorldCreated { seed: i });
+        }
+        assert_eq!(open.len(), 10);
+        assert_eq!(open.dropped(), 0);
+    }
+
+    #[test]
+    fn outcome_hash_covers_empire_doctrine() {
+        let mut a = World::new(21);
+        let mut b = World::new(21);
+        a.recompute_outcome_hash();
+        b.recompute_outcome_hash();
+        assert_eq!(a.outcome_hash(), b.outcome_hash());
+        let empire = *a.ledger().empires().next().unwrap().0;
+        // Mutate ledger directly (no log append) so only the empire fingerprint moves.
+        a.ledger
+            .get_empire_mut(empire)
+            .unwrap()
+            .salt_willingness = 0.91;
+        a.recompute_outcome_hash();
+        b.recompute_outcome_hash();
+        assert_eq!(a.log().len(), b.log().len());
+        assert_ne!(
+            a.outcome_hash(),
+            b.outcome_hash(),
+            "empire doctrine must affect outcome_hash"
+        );
+    }
+
+    #[test]
+    fn save_load_preserves_orders() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("orders.json");
+        let mut w = World::new(77);
+        let empire = *w.ledger().empires().next().unwrap().0;
+        let order_id = {
+            let mut op = Operator::new(&mut w);
+            op.issue_order(empire, "fortify", None)
+                .unwrap()
+                .expect("order written")
+        };
+        save_world(&mut w, &path).unwrap();
+        let loaded = load_world(&path).unwrap();
+        assert_eq!(loaded.ledger.orders_len(), 1);
+        let ord = loaded.ledger().get_order(order_id).unwrap();
+        assert_eq!(ord.intent, OrderIntent::Fortify);
+        assert_eq!(ord.empire_id, empire);
+        assert_eq!(loaded.ledger.empires_len(), w.ledger.empires_len());
     }
 
     #[test]

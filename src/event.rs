@@ -168,16 +168,66 @@ pub struct ChronicleEvent {
     pub kind: EventKind,
 }
 
-/// Append-only event log.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Default soft cap for retained chronicle events (Lock 10).
+/// `0` means unlimited. Long headless runs must not grow RAM unbounded.
+pub const DEFAULT_MAX_LOG_EVENTS: usize = 50_000;
+
+fn default_max_events() -> usize {
+    DEFAULT_MAX_LOG_EVENTS
+}
+
+/// Append-only event log with an optional soft retention cap (Lock 10).
+///
+/// Sequence numbers stay monotonic forever; when over cap, oldest retained
+/// events are dropped so fine-tick FuseTick/TickAdvanced spam cannot blow
+/// memory on long headless runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventLog {
     next_seq: u64,
     events: Vec<ChronicleEvent>,
+    /// Soft retention cap. `0` = unlimited. Default [`DEFAULT_MAX_LOG_EVENTS`].
+    #[serde(default = "default_max_events")]
+    max_events: usize,
+    /// Count of events dropped by the soft cap (observability / save).
+    #[serde(default)]
+    dropped: u64,
+}
+
+impl Default for EventLog {
+    fn default() -> Self {
+        Self {
+            next_seq: 0,
+            events: Vec::new(),
+            max_events: DEFAULT_MAX_LOG_EVENTS,
+            dropped: 0,
+        }
+    }
 }
 
 impl EventLog {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a log with an explicit retention cap (`0` = unlimited).
+    pub fn with_max_events(max_events: usize) -> Self {
+        Self {
+            max_events,
+            ..Self::default()
+        }
+    }
+
+    pub fn max_events(&self) -> usize {
+        self.max_events
+    }
+
+    pub fn set_max_events(&mut self, max_events: usize) {
+        self.max_events = max_events;
+        self.trim_to_cap();
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.dropped
     }
 
     pub fn append(&mut self, at_tick: u64, kind: EventKind) -> &ChronicleEvent {
@@ -188,7 +238,19 @@ impl EventLog {
             at_tick,
             kind,
         });
+        self.trim_to_cap();
         self.events.last().expect("just pushed")
+    }
+
+    fn trim_to_cap(&mut self) {
+        if self.max_events == 0 {
+            return;
+        }
+        if self.events.len() > self.max_events {
+            let excess = self.events.len() - self.max_events;
+            self.events.drain(0..excess);
+            self.dropped = self.dropped.saturating_add(excess as u64);
+        }
     }
 
     pub fn events(&self) -> &[ChronicleEvent] {
