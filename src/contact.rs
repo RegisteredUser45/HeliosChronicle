@@ -204,6 +204,43 @@ pub fn first_contact(
 
 
 /// Diplomatic fog grant: observer learns `system` without sensors (uncertainty 0.25).
+
+/// Diplomatic fog share: copy `from`'s known-system entry to `to` (Lock 9 knowledge path).
+///
+/// Fails closed if `from` does not know `system`. Recipient gets the shared entry
+/// (or keeps lower uncertainty if already better). Pushes fine-hot.
+pub fn share_fog(
+    world: &mut World,
+    from: EmpireId,
+    to: EmpireId,
+    system: EntityId,
+) -> bool {
+    let Some(src) = world
+        .contact
+        .get(from)
+        .and_then(|c| c.fog.known_systems.get(&system))
+        .cloned()
+    else {
+        return false;
+    };
+    let tick = world.master_tick();
+    let entry = world
+        .contact
+        .ensure(to)
+        .fog
+        .known_systems
+        .entry(system)
+        .or_insert_with(|| SystemFogEntry::fresh(tick));
+    entry.last_known_tick = entry.last_known_tick.max(src.last_known_tick).max(tick);
+    entry.uncertainty = entry.uncertainty.min(src.uncertainty);
+    if src.surveyed_fuse {
+        entry.surveyed_fuse = true;
+    }
+    push_fine_hot(world, system);
+    world.recompute_outcome_hash();
+    true
+}
+
 pub fn grant_fog(
     world: &mut World,
     observer: EmpireId,
@@ -842,6 +879,22 @@ mod tests {
         let u1 = w.contact.get(e).unwrap().fog.known_systems[&system].uncertainty;
         assert!(u1 > u0);
         assert!(u1 <= 1.0);
+    }
+
+
+    #[test]
+    fn share_fog_copies_known_system() {
+        let mut w = World::new(130);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        assert!(!share_fog(&mut w, a, b, system));
+        grant_fog(&mut w, a, system);
+        mark_system_surveyed(&mut w, a, system);
+        assert!(share_fog(&mut w, a, b, system));
+        let fog_b = &w.contact.get(b).unwrap().fog.known_systems[&system];
+        assert!(fog_b.surveyed_fuse);
+        assert!(fog_b.uncertainty <= 0.25);
     }
 
 }
