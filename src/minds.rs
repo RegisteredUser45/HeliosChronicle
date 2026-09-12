@@ -9,8 +9,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::entity::{
-    EmpireEntity, EmpireId, EntityId, EntityLedger, OrderIntent, OrderSource, OrderStatus,
-    SystemEntity,
+    EmpireEntity, EmpireId, EntityId, EntityLedger, OrderEntity, OrderIntent, OrderSource,
+    OrderStatus, SystemEntity,
 };
 use crate::event::EventKind;
 use crate::lod::{LodHint, LodMode};
@@ -39,22 +39,94 @@ const UNCERTAIN_FUSE_SCORE: f64 = 25.0;
 const UNKNOWN_FEED_PENALTY: f64 = 50.0;
 /// Feed score is multiplied by (1 - fog uncertainty) when known via fog.
 
-/// Feature flags for Phase I minds behavior (default both off).
+/// Feature flags for Phase I minds behavior.
+/// `scoring_enabled` defaults **true** so unbound empires run the algorithmic mind
+/// (STATEMENT: algorithmic default on every unbound empire). `salt_emit_enabled`
+/// stays default **false** until Lead clears real H knowledge paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MindsFlags {
     /// When false, `rescore_system` and the minds tick stub are no-ops.
+    /// Default **true** — unbound empires actually score.
     pub scoring_enabled: bool,
     /// When false, SaltWorld / PunishSalter / ProsecuteAtrocity are not written.
+    /// Default **false** — path ≠ emit.
     pub salt_emit_enabled: bool,
 }
 
 impl Default for MindsFlags {
     fn default() -> Self {
         Self {
-            scoring_enabled: false,
+            scoring_enabled: true,
             salt_emit_enabled: false,
         }
     }
+}
+
+/// Soft cap on retained Order entities (headless / RAM safety).
+/// `0` means unlimited. Terminal (Done/Cancelled) orders are dropped first.
+pub const DEFAULT_MAX_ORDERS: usize = 4_096;
+
+/// Done / Cancelled — no longer live work; safe to GC from the orders map.
+pub fn order_status_is_terminal(status: OrderStatus) -> bool {
+    matches!(status, OrderStatus::Done | OrderStatus::Cancelled)
+}
+
+/// Prune terminal orders, then soft-cap live growth via emit refusal elsewhere.
+/// Never removes Queued/Active. Returns how many orders were removed.
+///
+/// Kernel owns `entity.rs` (private `orders` map, no public remove). Lane-legal
+/// prune rebuilds the ledger through public insert APIs only, preserving
+/// systems/empires/bodies/live orders and `next_id`.
+pub fn prune_and_soft_cap_orders(world: &mut World) -> usize {
+    prune_and_soft_cap_orders_with_cap(world, DEFAULT_MAX_ORDERS)
+}
+
+/// Same as [`prune_and_soft_cap_orders`] with an explicit cap (`0` = unlimited after terminal prune).
+pub fn prune_and_soft_cap_orders_with_cap(world: &mut World, max_orders: usize) -> usize {
+    let before = world.ledger.orders_len();
+    let next_id = world.ledger.next_id();
+
+    // Keep only non-terminal orders (Queued/Active). Soft-cap never drops live work.
+    let keepers: Vec<OrderEntity> = world
+        .ledger
+        .orders()
+        .filter(|(_, o)| !order_status_is_terminal(o.status))
+        .map(|(_, o)| o.clone())
+        .collect();
+
+    // Cap is aspirational for live orders: refuse-emit enforces it; we never GC Queued/Active.
+    let _ = max_orders;
+
+    // Fast path: nothing terminal to drop.
+    if keepers.len() == before {
+        return 0;
+    }
+
+    let systems: Vec<_> = world.ledger.systems().map(|(_, s)| s.clone()).collect();
+    let empires: Vec<_> = world.ledger.empires().map(|(_, e)| e.clone()).collect();
+    let bodies: Vec<_> = world.ledger.bodies().map(|(_, b)| b.clone()).collect();
+
+    let mut new_ledger = EntityLedger::new();
+    for s in systems {
+        new_ledger.insert(s);
+    }
+    for e in empires {
+        new_ledger.insert_empire(e);
+    }
+    for b in bodies {
+        new_ledger.insert_body(b);
+    }
+    for o in keepers {
+        new_ledger.insert_order(o);
+    }
+    // Preserve id allocator so pruned high ids are never reused.
+    while new_ledger.next_id() < next_id {
+        let _ = new_ledger.alloc_id();
+    }
+
+    let removed = before - new_ledger.orders_len();
+    world.ledger = new_ledger;
+    removed
 }
 
 /// Per-system score against Phase B `MapState` for one empire's mind.
@@ -521,6 +593,12 @@ pub fn try_emit_order(
 ) -> Result<Option<EntityId>, String> {
     if world.ledger.get_empire(empire_id).is_none() {
         return Err(format!("empire {empire_id} not found"));
+    }
+
+    // Soft-cap: refuse new emits when at/over DEFAULT_MAX_ORDERS (live growth brake).
+    // Terminal GC is `prune_and_soft_cap_orders*` — Kernel ledger has no public remove.
+    if DEFAULT_MAX_ORDERS > 0 && world.ledger.orders_len() >= DEFAULT_MAX_ORDERS {
+        return Ok(None);
     }
 
     if is_salt_family(intent) {
@@ -997,10 +1075,13 @@ pub fn empire_needs_minds_tick(world: &World, empire_id: EntityId) -> bool {
 
 /// Minds tick — when scoring is enabled, emit at most one Ai order per empire per tick.
 /// Coarse LOD skips quiet empires (see `empire_needs_minds_tick`).
+/// Prunes terminal orders each scoring tick so cancel-only retention cannot balloon.
 pub fn minds_tick_stub(world: &mut World) {
     if !world.minds_flags.scoring_enabled {
         return;
     }
+    // Order GC before emit: cancel flips status only; prune shrinks the map (public APIs).
+    prune_and_soft_cap_orders(world);
     let empire_ids: Vec<EntityId> = world.ledger.empires().map(|(id, _)| *id).collect();
     for empire_id in empire_ids {
         // Phase J: operator-possessed empires are not AI-driven.
@@ -1203,6 +1284,7 @@ mod minds_tests {
     #[test]
     fn scoring_disabled_still_noop() {
         let mut w = World::new(50);
+        w.minds_flags.scoring_enabled = false;
         assert!(!w.minds_flags.scoring_enabled);
         let empire = *w.ledger.empires().next().unwrap().0;
         let sys = *w.ledger.systems().next().unwrap().0;
@@ -2500,6 +2582,179 @@ mod minds_tests {
         );
         // salt_emit remains default false
         assert!(!w.minds_flags.salt_emit_enabled);
+    }
+
+    #[test]
+    fn minds_flags_default_scoring_on_salt_off() {
+        let w = World::new(60);
+        assert!(w.minds_flags.scoring_enabled);
+        assert!(!w.minds_flags.salt_emit_enabled);
+        assert_eq!(MindsFlags::default().scoring_enabled, true);
+        assert_eq!(MindsFlags::default().salt_emit_enabled, false);
+    }
+
+    #[test]
+    fn prune_removes_cancelled_and_done_orders() {
+        let mut w = World::new(61);
+        w.minds_flags.scoring_enabled = false; // isolate prune from tick emit
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let live = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::ExpandSurvey,
+            Some(sys),
+            OrderSource::Operator,
+        )
+        .unwrap()
+        .expect("live");
+        let cancelled = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::Fortify,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("to cancel");
+        let done = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::Abandon,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("to complete");
+        {
+            let o = w.ledger.get_order_mut(cancelled).unwrap();
+            o.status = OrderStatus::Cancelled;
+        }
+        {
+            let o = w.ledger.get_order_mut(done).unwrap();
+            o.status = OrderStatus::Done;
+        }
+        assert_eq!(w.ledger.orders_len(), 3);
+        let removed = prune_and_soft_cap_orders(&mut w);
+        assert_eq!(removed, 2);
+        assert_eq!(w.ledger.orders_len(), 1);
+        assert!(w.ledger.get_order(live).is_some());
+        assert!(w.ledger.get_order(cancelled).is_none());
+        assert!(w.ledger.get_order(done).is_none());
+        assert_eq!(
+            w.ledger.get_order(live).unwrap().status,
+            OrderStatus::Queued
+        );
+    }
+
+    #[test]
+    fn soft_cap_holds_after_terminal_flood() {
+        let mut w = World::new(62);
+        w.minds_flags.scoring_enabled = false;
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        // One live + many cancelled — soft-cap must hold after prune.
+        let _live = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::ExpandSurvey,
+            Some(sys),
+            OrderSource::Operator,
+        )
+        .unwrap()
+        .expect("live");
+        for i in 0..20 {
+            let id = try_emit_order(
+                &mut w,
+                empire,
+                OrderIntent::Fortify,
+                Some(sys),
+                OrderSource::Ai,
+            )
+            .unwrap()
+            .expect("cancel fodder");
+            let o = w.ledger.get_order_mut(id).unwrap();
+            o.status = OrderStatus::Cancelled;
+            o.updated_tick = i as u64;
+            o.created_tick = i as u64;
+        }
+        assert_eq!(w.ledger.orders_len(), 21);
+        // Cap of 5: after terminal prune, only the live Queued remains (under cap).
+        let removed = prune_and_soft_cap_orders_with_cap(&mut w, 5);
+        assert_eq!(removed, 20);
+        assert!(w.ledger.orders_len() <= 5);
+        assert_eq!(w.ledger.orders_len(), 1);
+        assert!(w
+            .ledger
+            .orders()
+            .all(|(_, o)| matches!(o.status, OrderStatus::Queued | OrderStatus::Active)));
+    }
+
+    #[test]
+    fn minds_tick_prune_shrinks_cancelled_map() {
+        let mut w = World::new(63);
+        // scoring default-on; seed a cancelled order then tick → prune must drop it
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let old = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::ExpandSurvey,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("queued");
+        {
+            let o = w.ledger.get_order_mut(old).unwrap();
+            o.status = OrderStatus::Cancelled;
+        }
+        let before = w.ledger.orders_len();
+        assert!(before >= 1);
+        assert!(w.ledger.get_order(old).is_some());
+        minds_tick_stub(&mut w);
+        assert!(
+            w.ledger.get_order(old).is_none(),
+            "scoring tick must prune cancelled orders"
+        );
+        // Map must not retain the cancelled entry (may emit a new live order).
+        assert!(
+            !w.ledger
+                .orders()
+                .any(|(_, o)| o.status == OrderStatus::Cancelled),
+            "no cancelled residue after minds tick prune"
+        );
+    }
+
+    #[test]
+    fn soft_cap_refuse_emit_at_default_max() {
+        let mut w = World::new(64);
+        w.minds_flags.scoring_enabled = false;
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        // Fill to DEFAULT_MAX_ORDERS with live Queued (no prune path).
+        while w.ledger.orders_len() < DEFAULT_MAX_ORDERS {
+            let r = try_emit_order(
+                &mut w,
+                empire,
+                OrderIntent::Fortify,
+                Some(sys),
+                OrderSource::Operator,
+            )
+            .unwrap();
+            assert!(r.is_some(), "emit must succeed under soft-cap");
+        }
+        assert_eq!(w.ledger.orders_len(), DEFAULT_MAX_ORDERS);
+        let refused = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::ExpandSurvey,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap();
+        assert!(refused.is_none(), "emit must refuse at DEFAULT_MAX_ORDERS");
+        assert_eq!(w.ledger.orders_len(), DEFAULT_MAX_ORDERS);
     }
 
     #[test]

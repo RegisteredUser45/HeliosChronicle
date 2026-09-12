@@ -123,6 +123,8 @@ mod tests {
     #[test]
     fn event_log_is_append_only() {
         let mut w = World::new(7);
+        // Scoring default-on would emit Ai orders on tick; this test is about idle chronicle.
+        w.minds_flags.scoring_enabled = false;
         let before = w.log().len();
         // Idle ticks no longer append (Issue 11); notable paths still do.
         w.tick(3);
@@ -276,7 +278,7 @@ mod tests {
             e.kind,
             EventKind::EmpireSpawned { .. }
         )));
-        assert!(!w.minds_flags.scoring_enabled);
+        assert!(w.minds_flags.scoring_enabled);
         assert!(!w.minds_flags.salt_emit_enabled);
     }
 
@@ -540,6 +542,8 @@ mod tests {
     #[test]
     fn hot_ttl_cools_stamped_system() {
         let mut w = World::new(1);
+        // Scoring default-on can re-stamp Hot via minds tick; isolate TTL cooling.
+        w.minds_flags.scoring_enabled = false;
         let id = *w.ledger().systems().next().unwrap().0;
         w.ledger.get_mut(id).unwrap().lod_hint = LodHint::Hot;
         w.ledger.get_mut(id).unwrap().hot_until = Some(3);
