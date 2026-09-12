@@ -561,36 +561,10 @@ impl<'a> Operator<'a> {
         to_id: EntityId,
         qty: f64,
     ) -> Result<(), OperatorError> {
-        if from_id == to_id {
-            return Err(OperatorError::Other("same ship".into()));
-        }
-        let to_design_id = self
-            .world
-            .ships
-            .get(&to_id)
-            .map(|s| s.design_id)
-            .ok_or(OperatorError::NotFound(to_id))?;
-        let to_design = self
-            .world
-            .ship_designs
-            .get(&to_design_id)
-            .ok_or(OperatorError::NotFound(to_design_id))?
-            .clone();
-        let mut from = self
-            .world
-            .ships
-            .remove(&from_id)
-            .ok_or(OperatorError::NotFound(from_id))?;
-        let mut to = self
-            .world
-            .ships
-            .remove(&to_id)
-            .ok_or(OperatorError::NotFound(to_id))?;
-        let res = crate::hulls::transfer_cargo(&mut from, &to_design, &mut to, qty);
-        self.world.ships.insert(from_id, from);
-        self.world.ships.insert(to_id, to);
-        res.map_err(|e| OperatorError::Other(e.to_string()))
+        crate::hulls::transfer_cargo_ships(self.world, from_id, to_id, qty)
+            .map_err(|e| OperatorError::Other(e.to_string()))
     }
+
 
     /// Unload cargo from a ship.
     pub fn unload_ship_cargo(
@@ -612,30 +586,14 @@ impl<'a> Operator<'a> {
         ship_id: EntityId,
         qty: f64,
     ) -> Result<f64, OperatorError> {
-        let design_id = self
-            .world
-            .ships
-            .get(&ship_id)
-            .map(|s| s.design_id)
-            .ok_or(OperatorError::NotFound(ship_id))?;
-        let design = self
-            .world
-            .ship_designs
-            .get(&design_id)
-            .ok_or(OperatorError::NotFound(design_id))?
-            .clone();
         let before = self
             .world
             .ships
             .get(&ship_id)
             .map(|s| s.cargo_qty)
             .unwrap_or(0.0);
-        let ship = self
-            .world
-            .ships
-            .get_mut(&ship_id)
-            .ok_or(OperatorError::NotFound(ship_id))?;
-        let total = crate::hulls::load_cargo(&design, ship, qty).map_err(|e| OperatorError::Other(e.to_string()))?;
+        let total = crate::hulls::load_cargo_on_ship(self.world, ship_id, qty)
+            .map_err(|e| OperatorError::Other(e.to_string()))?;
         let added = (total - before).max(0.0);
         if added > 0.0 {
             let tick = self.world.master_tick();
@@ -649,6 +607,7 @@ impl<'a> Operator<'a> {
         }
         Ok(total)
     }
+
 
     /// Cargo capacity from design cargo_hold modules.
     pub fn ship_cargo_capacity(&self, ship_id: EntityId) -> Result<f64, OperatorError> {
@@ -686,25 +645,10 @@ impl<'a> Operator<'a> {
         ship_id: EntityId,
         ammo_id: &str,
     ) -> Result<f64, OperatorError> {
-        let design_id = self
-            .world
-            .ships
-            .get(&ship_id)
-            .map(|s| s.design_id)
-            .ok_or(OperatorError::NotFound(ship_id))?;
-        let design = self
-            .world
-            .ship_designs
-            .get(&design_id)
-            .ok_or(OperatorError::NotFound(design_id))?
-            .clone();
-        let ship = self
-            .world
-            .ships
-            .get_mut(&ship_id)
-            .ok_or(OperatorError::NotFound(ship_id))?;
-        crate::hulls::fire_kinetic(&design, ship, ammo_id).map_err(|e| OperatorError::Other(e.to_string()))
+        crate::hulls::fire_kinetic_ship(self.world, ship_id, ammo_id)
+            .map_err(|e| OperatorError::Other(e.to_string()))
     }
+
 
     /// Spend ship magazine ammo.
     pub fn spend_ship_magazine(

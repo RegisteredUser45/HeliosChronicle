@@ -146,22 +146,119 @@ pub fn crew_ok(design: &ShipDesign, ship: &ShipInstance) -> bool {
 /// Attempt a move: requires [`can_move`], then burns `burn` fuel. No RNG.
 
 /// World-level move: gate + burn without cloning [`ShipDesign`].
+
+/// Load cargo by ship id without cloning [`ShipDesign`].
+pub fn load_cargo_on_ship(world: &mut World, ship_id: EntityId, qty: f64) -> Result<f64, HullError> {
+    let design_id = world
+        .ships
+        .get(&ship_id)
+        .ok_or(HullError::ShipNotFound)?
+        .design_id;
+    let cap = {
+        let d = world
+            .ship_designs
+            .get(&design_id)
+            .ok_or(HullError::DesignNotFound)?;
+        cargo_capacity(d)
+    };
+    let ship = world.ships.get_mut(&ship_id).ok_or(HullError::ShipNotFound)?;
+    if !qty.is_finite() || qty < 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    let room = (cap - ship.cargo_qty).max(0.0);
+    ship.cargo_qty += qty.min(room);
+    Ok(ship.cargo_qty)
+}
+
+/// Fire kinetic by ship id without cloning [`ShipDesign`].
+pub fn fire_kinetic_ship(world: &mut World, ship_id: EntityId, ammo_id: &str) -> Result<f64, HullError> {
+    let design_id = world
+        .ships
+        .get(&ship_id)
+        .ok_or(HullError::ShipNotFound)?
+        .design_id;
+    let has_weapon = {
+        let d = world
+            .ship_designs
+            .get(&design_id)
+            .ok_or(HullError::DesignNotFound)?;
+        design_has_module(d, "module.weapon_kinetic")
+    };
+    let ship = world.ships.get_mut(&ship_id).ok_or(HullError::ShipNotFound)?;
+    if !has_weapon
+        || ship.damage >= 1.0
+        || ship.magazines.get(ammo_id).copied().unwrap_or(0.0) <= 0.0
+    {
+        return Err(HullError::InsufficientFuel);
+    }
+    spend_magazine(ship, ammo_id, 1.0)
+}
+
+/// Transfer cargo by ship ids without cloning [`ShipDesign`].
+pub fn transfer_cargo_ships(
+    world: &mut World,
+    from_id: EntityId,
+    to_id: EntityId,
+    qty: f64,
+) -> Result<(), HullError> {
+    if from_id == to_id {
+        return Err(HullError::BadFuel);
+    }
+    let to_design_id = world
+        .ships
+        .get(&to_id)
+        .ok_or(HullError::ShipNotFound)?
+        .design_id;
+    let cap = {
+        let d = world
+            .ship_designs
+            .get(&to_design_id)
+            .ok_or(HullError::DesignNotFound)?;
+        cargo_capacity(d)
+    };
+    let mut from = world.ships.remove(&from_id).ok_or(HullError::ShipNotFound)?;
+    let mut to = world.ships.remove(&to_id).ok_or(HullError::ShipNotFound)?;
+    let res = (|| {
+        if !qty.is_finite() || qty <= 0.0 {
+            return Err(HullError::BadFuel);
+        }
+        if from.cargo_qty + 1e-12 < qty {
+            return Err(HullError::InsufficientFuel);
+        }
+        let room = (cap - to.cargo_qty).max(0.0);
+        if room + 1e-12 < qty {
+            return Err(HullError::InsufficientFuel);
+        }
+        from.cargo_qty = (from.cargo_qty - qty).max(0.0);
+        to.cargo_qty += qty;
+        Ok(())
+    })();
+    world.ships.insert(from_id, from);
+    world.ships.insert(to_id, to);
+    res
+}
+
 pub fn try_move_ship(world: &mut World, ship_id: EntityId, burn: f64) -> Result<f64, HullError> {
     let design_id = world
         .ships
         .get(&ship_id)
         .ok_or(HullError::ShipNotFound)?
         .design_id;
-    let (design_entity, fuel_tier, crew_req) = {
+    let (design_entity, fuel_tier_ok, crew_req) = {
         let d = world
             .ship_designs
             .get(&design_id)
             .ok_or(HullError::DesignNotFound)?;
-        (d.id, d.fuel_tier.clone(), d.crew_req)
+        let ship = world.ships.get(&ship_id).ok_or(HullError::ShipNotFound)?;
+        (
+            d.id,
+            ship.fuel_tier == d.fuel_tier,
+            d.crew_req,
+        )
     };
     let ship = world.ships.get_mut(&ship_id).ok_or(HullError::ShipNotFound)?;
     let ok = ship.design_id == design_entity
-        && ship.fuel_tier == fuel_tier
+        && fuel_tier_ok
         && ship.fuel_qty > 0.0
         && ship.damage < 1.0
         && ship.crew + 1e-12 >= crew_req;
@@ -233,6 +330,39 @@ pub fn register_design(world: &mut World, empire_id: EntityId, name: impl Into<S
     let tick = world.master_tick;
     world.log.append(tick, EventKind::DesignRegistered { empire: empire_id, design: id });
     Ok(id)
+}
+
+/// After a lab completes a tech segment: if its `module.*` unlocks form a valid
+/// ShipDesign (engine → fuel_tier), register `design.<segment_suffix>` once.
+/// Facility-only / no-engine segments return `Ok(None)`. Idempotent by design name.
+pub fn unlock_design_from_completed_segment(
+    world: &mut World,
+    empire_id: EntityId,
+    segment_id: &str,
+) -> Result<Option<EntityId>, HullError> {
+    let Some(seg) = crate::research::find_segment(segment_id) else {
+        return Ok(None);
+    };
+    let modules: Vec<String> = seg
+        .unlocks
+        .iter()
+        .filter(|u| u.starts_with("module."))
+        .cloned()
+        .collect();
+    if modules.is_empty() {
+        return Ok(None);
+    }
+    // No engine / invalid module set → skip silently (facility-adjacent modules alone).
+    if derive_fuel_tier(&modules).is_err() {
+        return Ok(None);
+    }
+    let suffix = segment_id.strip_prefix("seg.").unwrap_or(segment_id);
+    let name = format!("design.{suffix}");
+    if let Some((&existing_id, _)) = world.ship_designs.iter().find(|(_, d)| d.name == name) {
+        return Ok(Some(existing_id));
+    }
+    let id = register_design(world, empire_id, name, modules)?;
+    Ok(Some(id))
 }
 
 pub fn tool_yard(world: &mut World, empire_id: EntityId, design_id: EntityId) -> Result<(), HullError> {

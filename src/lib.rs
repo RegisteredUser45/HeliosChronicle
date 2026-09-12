@@ -69,7 +69,7 @@ pub use violence::{
     SALT_RADIATION_DELTA, SALT_SEVERITY, SALT_TEMPERATURE_DELTA, SALT_TOXINS_DELTA,
 };
 pub use research::{assign_lab, material_gates_met, set_lab_site, empire_has_unlock, find_segment, gates_ref_catalog, line_prereqs_met, make_lab, repair_salvage_segment, salvage_unlock_segment, segment_rp_cost, stub_tech_book, tick_all_labs, tick_lab, tick_lab_on_world, unlock_segment, Lab, TechCategory, TechLine, TechSegment};
-pub use hulls::{apply_ship_damage, build_ship, build_ship_at_system, can_fire, crew_ok, cargo_capacity, can_sense, can_move, design_has_module, derive_fuel_tier, fire_kinetic, jettison_cargo, fuel_recipe_for_tier, load_cargo, unload_cargo, load_magazine, spend_magazine, make_design, refine_fuel_at_system, refine_ship_tier_fuel, refuel, refuel_from_system, register_design, spend_fuel, spawn_instance, tool_yard, try_move, try_move_ship, yard_build_ship, transfer_cargo, transfer_fuel, tool_yard_at_system, HullError, ShipDesign, ShipInstance};
+pub use hulls::{apply_ship_damage, build_ship, build_ship_at_system, can_fire, crew_ok, cargo_capacity, can_sense, can_move, design_has_module, derive_fuel_tier, fire_kinetic, jettison_cargo, fuel_recipe_for_tier, load_cargo, unload_cargo, load_magazine, spend_magazine, make_design, refine_fuel_at_system, refine_ship_tier_fuel, refuel, refuel_from_system, register_design, spend_fuel, spawn_instance, tool_yard, try_move, try_move_ship, transfer_cargo_ships, fire_kinetic_ship, load_cargo_on_ship, yard_build_ship, transfer_cargo, transfer_fuel, tool_yard_at_system, unlock_design_from_completed_segment, HullError, ShipDesign, ShipInstance};
 pub use globals::{Band, SpeciesEnvelope};
 
 /// Run two worlds from the same seed for `ticks` and return whether outcomes match.

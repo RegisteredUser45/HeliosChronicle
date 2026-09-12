@@ -473,6 +473,8 @@ pub fn tick_lab_on_world(world: &mut crate::world::World, lab_id: EntityId, dt: 
     if let Some(ref seg) = done {
         let tick = world.master_tick;
         world.log.append(tick, EventKind::SegmentResearched { empire: empire_id, segment: seg.clone() });
+        // Lab completion → auto-register ShipDesign from module.* unlocks (idempotent).
+        let _ = crate::hulls::unlock_design_from_completed_segment(world, empire_id, seg);
     }
     Ok(done)
 }
@@ -611,5 +613,56 @@ mod tests {
         assert!(empire.incomplete_stat_segments.contains("seg.chem_drive"));
         unlock_segment(&mut empire, &seg).unwrap();
         assert!(!empire.incomplete_stat_segments.contains("seg.chem_drive"));
+    }
+
+    #[test]
+    fn lab_completion_unlocks_ship_design() {
+        use crate::event::EventKind;
+        use crate::hulls::unlock_design_from_completed_segment;
+        use crate::world::World;
+        let mut w = World::new(42);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        // seg.chem_drive is propulsion index 0 — no line prereqs; no site → no material-gate stall
+        let lab_id = w.ledger.alloc_id();
+        let mut lab = make_lab(lab_id, empire, 1.0);
+        assign_lab(&mut lab, "seg.chem_drive").unwrap();
+        w.labs.insert(lab_id, lab);
+
+        let mut done = None;
+        let mut guard = 0;
+        while done.is_none() && guard < 10_000 {
+            done = tick_lab_on_world(&mut w, lab_id, 100).unwrap();
+            guard += 1;
+        }
+        assert_eq!(done.as_deref(), Some("seg.chem_drive"));
+        assert!(w
+            .log
+            .events()
+            .iter()
+            .any(|e| matches!(&e.kind, EventKind::SegmentResearched { segment, .. } if segment == "seg.chem_drive")));
+
+        let emp = w.ledger.get_empire(empire).unwrap();
+        assert!(emp.unlocked_catalog_ids.contains("module.engine_chem"));
+
+        let designs: Vec<_> = w
+            .ship_designs
+            .values()
+            .filter(|d| d.name == "design.chem_drive")
+            .collect();
+        assert_eq!(designs.len(), 1, "exactly one auto design from chem_drive");
+        assert!(designs[0].modules.iter().any(|m| m == "module.engine_chem"));
+        assert_eq!(designs[0].fuel_tier, "fuel.chemical");
+        let design_id = designs[0].id;
+
+        // Idempotent: second unlock does not duplicate
+        let again = unlock_design_from_completed_segment(&mut w, empire, "seg.chem_drive").unwrap();
+        assert_eq!(again, Some(design_id));
+        assert_eq!(
+            w.ship_designs
+                .values()
+                .filter(|d| d.name == "design.chem_drive")
+                .count(),
+            1
+        );
     }
 }
