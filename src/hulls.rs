@@ -485,6 +485,30 @@ pub fn refine_ship_tier_fuel(
     refine_fuel_at_system(world, ship_id, system, recipe)
 }
 
+
+/// One-shot yard construction: register design, tool yard (`recipe.yard_mk1` if needed),
+/// consume `recipe.hull_plate`, spawn ship. NEW F pipeline for B/operator consumers.
+pub fn yard_build_ship(
+    world: &mut World,
+    empire_id: EntityId,
+    system: EntityId,
+    name: impl Into<String>,
+    modules: Vec<String>,
+    fuel_qty: f64,
+) -> Result<EntityId, HullError> {
+    let name = name.into();
+    let design_id = register_design(world, empire_id, name, modules)?;
+    let already = world
+        .ledger
+        .get_empire(empire_id)
+        .map(|e| e.tooled_design_ids.contains(&design_id.0))
+        .unwrap_or(false);
+    if !already {
+        tool_yard_at_system(world, empire_id, design_id, system)?;
+    }
+    build_ship_at_system(world, empire_id, design_id, system, fuel_qty)
+}
+
 pub fn build_ship_at_system(
     world: &mut World,
     empire_id: EntityId,
@@ -889,6 +913,35 @@ mod tests {
         load_cargo(&d, &mut s, 10.0).unwrap();
         assert!((s.cargo_qty - 10.0).abs() < 1e-9);
     }
+
+    #[test]
+    fn yard_build_ship_one_shot() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(160);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        // yard_mk1 BOM + hull_plate BOM
+        add_deposit(&mut w, system, Deposit::new("stock.ore_binding", 28.0, 1.0, ExtractorKind::State)).unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.silicates", 12.0, 1.0, ExtractorKind::State)).unwrap();
+        let sid = yard_build_ship(
+            &mut w,
+            empire,
+            system,
+            "keel",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+            2.0,
+        )
+        .unwrap();
+        assert!(w.ships.contains_key(&sid));
+        let design_id = w.ships.get(&sid).unwrap().design_id;
+        assert!(can_move(w.ship_designs.get(&design_id).unwrap(), w.ships.get(&sid).unwrap()));
+    }
+
 
     #[test]
     fn unload_cargo_errors_when_empty() {
