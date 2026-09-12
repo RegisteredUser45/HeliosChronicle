@@ -330,6 +330,16 @@ pub fn apply_layer_burst(body: &mut BodyEntity, delta: &EnvLayers) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Blank crust system for tests that seed exact BOMs (Lock 6 catalog seed fills World::new default).
+    fn blank_system(w: &mut crate::world::World) -> crate::entity::EntityId {
+        let id = w.ledger.spawn_system();
+        if let Some(s) = w.ledger.get_mut(id) {
+            s.binding_remainder = 0.0;
+            s.deposits.clear();
+        }
+        id
+    }
     use super::*;
     use crate::entity::{BodyEntity, EntityId, EnvLayers};
     use crate::globals::SpeciesEnvelope;
@@ -494,7 +504,7 @@ mod tests {
         use crate::research::{find_segment, unlock_segment};
         use crate::world::World;
         let mut w = World::new(77);
-        let system = *w.ledger.systems().next().unwrap().0;
+        let system = blank_system(&mut w);
         let empire = *w.ledger.empires().next().unwrap().0;
         let body_id = w.ledger.spawn_body(system);
         unlock_segment(

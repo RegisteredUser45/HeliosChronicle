@@ -488,6 +488,16 @@ pub fn tick_lab_on_world(world: &mut crate::world::World, lab_id: EntityId, dt: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Blank crust system for tests that seed exact BOMs (Lock 6 catalog seed fills World::new default).
+    fn blank_system(w: &mut crate::world::World) -> crate::entity::EntityId {
+        let id = w.ledger.spawn_system();
+        if let Some(s) = w.ledger.get_mut(id) {
+            s.binding_remainder = 0.0;
+            s.deposits.clear();
+        }
+        id
+    }
     use crate::entity::EntityId;
     use crate::globals::Globals;
 
@@ -578,7 +588,7 @@ mod tests {
         use crate::world::World;
         let mut w = World::new(21);
         let empire = *w.ledger.empires().next().unwrap().0;
-        let system = *w.ledger.systems().next().unwrap().0;
+        let system = blank_system(&mut w);
         unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment("seg.basic_lab").unwrap()).unwrap();
         let lab_id = w.ledger.alloc_id();
         let mut lab = make_lab(lab_id, empire, 1000.0);
@@ -721,7 +731,7 @@ mod tests {
         use crate::world::World;
         let mut w = World::new(44);
         let empire = *w.ledger.empires().next().unwrap().0;
-        let system = *w.ledger.systems().next().unwrap().0;
+        let system = blank_system(&mut w);
         for sid in ["seg.basic_lab", "seg.yard"] {
             unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
         }
