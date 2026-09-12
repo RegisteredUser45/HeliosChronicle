@@ -144,6 +144,7 @@ pub fn can_move(design: &ShipDesign, instance: &ShipInstance) -> bool {
         && instance.fuel_tier == design.fuel_tier
         && instance.fuel_qty > 0.0
         && instance.damage < 1.0
+        && crew_ok(design, instance)
 }
 
 pub fn spawn_instance(id: EntityId, design: &ShipDesign, fuel_qty: f64) -> ShipInstance {
@@ -771,4 +772,18 @@ mod tests {
         s.crew = 0.0;
         assert!(!crew_ok(&d, &s));
     }
+    #[test]
+    fn undermanned_blocks_move() {
+        let d = make_design(
+            EntityId(100),
+            "boat",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        let mut inst = spawn_instance(EntityId(101), &d, 5.0);
+        assert!(can_move(&d, &inst));
+        inst.crew = 0.0;
+        assert!(!can_move(&d, &inst));
+    }
+
 }
