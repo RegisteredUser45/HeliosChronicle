@@ -329,6 +329,29 @@ pub fn transfer_fuel(
 /// Load cargo onto ship up to design cargo_capacity.
 
 /// Unload cargo from ship; errors if not enough loaded.
+
+/// Move cargo between ships; destination must have remaining capacity.
+pub fn transfer_cargo(
+    from: &mut ShipInstance,
+    to_design: &ShipDesign,
+    to: &mut ShipInstance,
+    qty: f64,
+) -> Result<(), HullError> {
+    if !qty.is_finite() || qty <= 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    if from.cargo_qty + 1e-12 < qty {
+        return Err(HullError::InsufficientFuel);
+    }
+    let room = (cargo_capacity(to_design) - to.cargo_qty).max(0.0);
+    if room + 1e-12 < qty {
+        return Err(HullError::InsufficientFuel);
+    }
+    from.cargo_qty = (from.cargo_qty - qty).max(0.0);
+    to.cargo_qty += qty;
+    Ok(())
+}
+
 pub fn unload_cargo(ship: &mut ShipInstance, qty: f64) -> Result<f64, HullError> {
     if !qty.is_finite() || qty < 0.0 {
         return Err(HullError::BadFuel);
@@ -845,6 +868,26 @@ mod tests {
         unload_cargo(&mut s, 3.0).unwrap();
         assert!((s.cargo_qty - 2.0).abs() < 1e-9);
         assert!(matches!(unload_cargo(&mut s, 9.0).unwrap_err(), HullError::InsufficientFuel));
+    }
+
+    #[test]
+    fn transfer_cargo_between_holds() {
+        let d = make_design(
+            EntityId(130),
+            "h",
+            vec!["module.engine_chem".into(), "module.cargo_hold".into()],
+        )
+        .unwrap();
+        let mut a = spawn_instance(EntityId(131), &d, 1.0);
+        let mut b = spawn_instance(EntityId(132), &d, 1.0);
+        load_cargo(&d, &mut a, 8.0).unwrap();
+        transfer_cargo(&mut a, &d, &mut b, 3.0).unwrap();
+        assert!((a.cargo_qty - 5.0).abs() < 1e-9);
+        assert!((b.cargo_qty - 3.0).abs() < 1e-9);
+        assert!(matches!(
+            transfer_cargo(&mut a, &d, &mut b, 20.0).unwrap_err(),
+            HullError::InsufficientFuel
+        ));
     }
 
 }

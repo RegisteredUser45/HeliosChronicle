@@ -509,6 +509,45 @@ impl<'a> Operator<'a> {
 
 
 
+
+    /// Transfer cargo between two ships (dest capacity gated).
+    pub fn transfer_ship_cargo(
+        &mut self,
+        from_id: EntityId,
+        to_id: EntityId,
+        qty: f64,
+    ) -> Result<(), OperatorError> {
+        if from_id == to_id {
+            return Err(OperatorError::Other("same ship".into()));
+        }
+        let to_design_id = self
+            .world
+            .ships
+            .get(&to_id)
+            .map(|s| s.design_id)
+            .ok_or(OperatorError::NotFound(to_id))?;
+        let to_design = self
+            .world
+            .ship_designs
+            .get(&to_design_id)
+            .ok_or(OperatorError::NotFound(to_design_id))?
+            .clone();
+        let mut from = self
+            .world
+            .ships
+            .remove(&from_id)
+            .ok_or(OperatorError::NotFound(from_id))?;
+        let mut to = self
+            .world
+            .ships
+            .remove(&to_id)
+            .ok_or(OperatorError::NotFound(to_id))?;
+        let res = crate::hulls::transfer_cargo(&mut from, &to_design, &mut to, qty);
+        self.world.ships.insert(from_id, from);
+        self.world.ships.insert(to_id, to);
+        res.map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Unload cargo from a ship.
     pub fn unload_ship_cargo(
         &mut self,
