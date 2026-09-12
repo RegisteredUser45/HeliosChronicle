@@ -144,6 +144,33 @@ pub fn crew_ok(design: &ShipDesign, ship: &ShipInstance) -> bool {
 
 
 /// Attempt a move: requires [`can_move`], then burns `burn` fuel. No RNG.
+
+/// World-level move: gate + burn without cloning [`ShipDesign`].
+pub fn try_move_ship(world: &mut World, ship_id: EntityId, burn: f64) -> Result<f64, HullError> {
+    let design_id = world
+        .ships
+        .get(&ship_id)
+        .ok_or(HullError::ShipNotFound)?
+        .design_id;
+    let (design_entity, fuel_tier, crew_req) = {
+        let d = world
+            .ship_designs
+            .get(&design_id)
+            .ok_or(HullError::DesignNotFound)?;
+        (d.id, d.fuel_tier.clone(), d.crew_req)
+    };
+    let ship = world.ships.get_mut(&ship_id).ok_or(HullError::ShipNotFound)?;
+    let ok = ship.design_id == design_entity
+        && ship.fuel_tier == fuel_tier
+        && ship.fuel_qty > 0.0
+        && ship.damage < 1.0
+        && ship.crew + 1e-12 >= crew_req;
+    if !ok {
+        return Err(HullError::InsufficientFuel);
+    }
+    spend_fuel(ship, burn)
+}
+
 pub fn try_move(design: &ShipDesign, ship: &mut ShipInstance, burn: f64) -> Result<f64, HullError> {
     if !can_move(design, ship) {
         return Err(HullError::InsufficientFuel);
@@ -991,5 +1018,26 @@ mod tests {
         assert!((jettison_cargo(&mut s, 10.0).unwrap() - 4.0).abs() < 1e-9);
         assert!((s.cargo_qty).abs() < 1e-9);
     }
+    #[test]
+    fn try_move_ship_no_design_clone_path() {
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(170);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        let did = register_design(
+            &mut w,
+            empire,
+            "runner",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        tool_yard(&mut w, empire, did).unwrap();
+        let sid = build_ship(&mut w, empire, did, 4.0).unwrap();
+        assert!((try_move_ship(&mut w, sid, 1.0).unwrap() - 3.0).abs() < 1e-9);
+    }
+
 
 }
