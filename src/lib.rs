@@ -52,7 +52,7 @@ pub use matter::{
 pub use minds::{clamp_doctrine, MindsFlags};
 pub use operator::{Operator, OperatorError};
 pub use politics::{
-    apply_event_for_standing, apply_reparations_breach, emit_salt, StandingStore, STANDING_CONFESSION, STANDING_CONFIRMED, STANDING_LEAK, STANDING_FIRST_CONTACT,
+    apply_event_for_standing, apply_reparations_breach, forgive_standing, emit_salt, StandingStore, STANDING_CONFESSION, STANDING_CONFIRMED, STANDING_LEAK, STANDING_FIRST_CONTACT, STANDING_FORGIVE_DEFAULT,
     STANDING_RUMOR, STANDING_SALT_VICTIM, STANDING_REPARATIONS_BREACH, STANDING_VIOLENCE_VICTIM,
 };
 pub use save::{load_world, save_world, SaveError};

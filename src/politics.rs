@@ -20,6 +20,8 @@ pub const STANDING_REPARATIONS_BREACH: i32 = 10;
 pub const STANDING_CONFESSION: i32 = 20;
 /// Witness standing from a Leak source (between rumor and confirmed).
 pub const STANDING_LEAK: i32 = 12;
+/// Default forgiveness step when amount omitted by callers.
+pub const STANDING_FORGIVE_DEFAULT: i32 = 5;
 /// Standing delta multiplier numerator when NonAggression treaty holds (half impact).
 pub const NON_AGGRESSION_SOFTEN_NUM: i32 = 1;
 pub const NON_AGGRESSION_SOFTEN_DEN: i32 = 2;
@@ -85,6 +87,27 @@ fn bump_standing(world: &mut World, a: EmpireId, b: EmpireId, delta: i32, reason
 }
 
 
+
+
+/// Soften negative standing from `from` toward `to` without crossing into positive goodwill.
+///
+/// Returns the new standing. No-op when standing is already non-negative.
+pub fn forgive_standing(
+    world: &mut World,
+    from: EmpireId,
+    to: EmpireId,
+    amount: i32,
+) -> i32 {
+    let amount = amount.max(0);
+    let cur = world.standing.get(from, to);
+    if from == to || cur >= 0 || amount == 0 {
+        return cur;
+    }
+    let room = (-cur) as i32;
+    let step = amount.min(room);
+    bump_standing(world, from, to, step, 0);
+    world.standing.get(from, to)
+}
 
 /// Extra standing penalty when a treaty with ReparationsStub is broken (G/P).
 pub fn apply_reparations_breach(world: &mut World, a: EmpireId, b: EmpireId, seq: u64) {
@@ -395,6 +418,42 @@ mod tests {
         assert!(confess_ko(&mut w, ko, holder));
         let carriers = &w.knowledge.get(ko).unwrap().carriers;
         assert!(carriers.contains(&CarrierId::Empire(partner)));
+    }
+
+
+    #[test]
+    fn forgive_standing_softens_hostility() {
+        let mut w = World::new(150);
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        // Seed hostility via salt-style bump through emit path: use strike standing.
+        use crate::entity::EnvLayers;
+        use crate::violence::{strike_layers, StrikeKind};
+        let system = *w.ledger().systems().next().unwrap().0;
+        let body = w.ledger.spawn_body(system);
+        strike_layers(
+            &mut w,
+            a,
+            b,
+            system,
+            body,
+            StrikeKind::OrbitalStrike,
+            EnvLayers {
+                atmosphere_pressure: 0.0,
+                temperature: 0.0,
+                radiation: 1.0,
+                toxins_fallout: 0.0,
+                biosphere: 0.0,
+            },
+        )
+        .unwrap();
+        let before = w.standing.get(b, a);
+        assert!(before < 0);
+        let after = forgive_standing(&mut w, b, a, STANDING_FORGIVE_DEFAULT);
+        assert_eq!(after, before + STANDING_FORGIVE_DEFAULT);
+        // Does not cross into positive.
+        let _ = forgive_standing(&mut w, b, a, 10_000);
+        assert!(w.standing.get(b, a) <= 0);
     }
 
 }
