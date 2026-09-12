@@ -119,6 +119,20 @@ pub fn strip_mine_extract_for_doctrine(snap: &DoctrineSnap) -> f64 {
     STRIP_MINE_EXTRACT * (0.5 + 0.5 * a)
 }
 
+/// NEW: Fortify structure-soak floor scaled by hold bias.
+///
+/// Hold bias = max(evacuate_vs_die_in_place, 1 - salt_willingness). Players feel
+/// this: die-in-place / low-salt empires raise harder fortifications. Range
+/// half..full `FORTIFY_STRUCTURE_SOAK`.
+pub fn fortify_soak_for_doctrine(snap: &DoctrineSnap) -> f64 {
+    let hold = snap
+        .evacuate_vs_die_in_place
+        .max(1.0 - snap.salt_willingness)
+        .clamp(0.0, 1.0);
+    FORTIFY_STRUCTURE_SOAK * (0.5 + 0.5 * hold)
+}
+
+
 
 
 /// Clamp doctrine willingness / bias into `[0.0, 1.0]`.
@@ -483,12 +497,17 @@ pub fn execute_plant_yard_intent(
 /// Ai Fortify: ensure a body, raise structure soak to fortify floor.
 pub fn execute_fortify_intent(
     world: &mut World,
-    _empire_id: EntityId,
+    empire_id: EntityId,
     system_id: EntityId,
 ) -> EntityId {
+    let floor = world
+        .ledger
+        .get_empire(empire_id)
+        .map(|e| fortify_soak_for_doctrine(&doctrine_snap_from_empire(e)))
+        .unwrap_or(FORTIFY_STRUCTURE_SOAK);
     let body_id = ensure_system_body(world, system_id);
     if let Some(body) = world.ledger.get_body_mut(body_id) {
-        body.structure_soak = body.structure_soak.max(FORTIFY_STRUCTURE_SOAK);
+        body.structure_soak = body.structure_soak.max(floor);
     }
     body_id
 }
@@ -2182,6 +2201,22 @@ mod minds_tests {
         assert!(body.structure_soak >= PLANT_YARD_STRUCTURE_SOAK);
     }
 
+
+    #[test]
+    fn fortify_soak_scales_with_hold_doctrine() {
+        let hold = DoctrineSnap {
+            evacuate_vs_die_in_place: 1.0,
+            salt_willingness: 0.0,
+        };
+        let soft = DoctrineSnap {
+            evacuate_vs_die_in_place: 0.0,
+            salt_willingness: 1.0,
+        };
+        assert!((fortify_soak_for_doctrine(&hold) - FORTIFY_STRUCTURE_SOAK).abs() < 1e-9);
+        assert!((fortify_soak_for_doctrine(&soft) - FORTIFY_STRUCTURE_SOAK * 0.5).abs() < 1e-9);
+        assert!(fortify_soak_for_doctrine(&hold) > fortify_soak_for_doctrine(&soft));
+    }
+
     #[test]
     fn ai_fortify_raises_structure_soak() {
         let mut w = World::new(152);
@@ -2197,8 +2232,11 @@ mod minds_tests {
         .unwrap()
         .expect("fortify");
         assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::Fortify);
+        let floor = fortify_soak_for_doctrine(&doctrine_snap_from_empire(
+            w.ledger.get_empire(empire).unwrap(),
+        ));
         let (_bid, body) = w.ledger.bodies_for_system(sys).next().expect("body");
-        assert!(body.structure_soak >= FORTIFY_STRUCTURE_SOAK);
+        assert!(body.structure_soak >= floor - 1e-9);
     }
 
 
