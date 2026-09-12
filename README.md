@@ -31,8 +31,18 @@ Rust / Cargo library (`helios_chronicle`) + thin binary (`helios`).
 | Possess / release empire | Stub — `Operator::possess` / `release`; events + save field |
 | AI skip while possessed | Done — `minds_tick_stub` skips possessed empire |
 | Injectors (force dry/pause/nova) | Not yet (rumor inject exists via knowledge) |
-| Replay from event log | Not yet (`verify` / seed path only) |
+| Chronicle / History | EventLog moments only (Issue 11) — no full replay |
 | Headless `--possess <id>` | Done |
+
+## Phase U — Operator shell (milestone 1)
+
+Instrument panel over the live ledger (STATEMENT §11). Map never goes away; pan/zoom; time pause/step; System inspector; EventLog chronicle strip (not a replay viewer).
+
+```bash
+cargo run --bin helios -- ui --seed 42
+```
+
+Requires a display and rustc ≥1.85ish (this box uses rustup 1.98). Optional feature `ui` pulls `eframe`/`egui`.
 
 ## Phase I — Minds (schema stub)
 
