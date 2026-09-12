@@ -333,6 +333,140 @@ pub fn map_state_counts(world: &World) -> [(MapState, usize); 5] {
 }
 
 
+/// Ticks per unit orbital radius (in-system clock). Bodies have no extra
+/// schema fields — radius is 1 + stable index among bodies on the system.
+pub const ORBIT_TICKS_PER_RADIUS: f64 = 10.0;
+
+fn bodies_sorted(world: &World, system: EntityId) -> Vec<EntityId> {
+    let mut ids: Vec<EntityId> = world
+        .ledger
+        .bodies_for_system(system)
+        .map(|(id, _)| *id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Stable 0-based orbit index for a body among siblings on its system.
+pub fn orbit_index(world: &World, body: EntityId) -> Option<usize> {
+    let b = world.ledger.get_body(body)?;
+    bodies_sorted(world, b.system)
+        .iter()
+        .position(|&id| id == body)
+}
+
+/// Orbital radius stub: `1 + orbit_index`.
+pub fn orbit_radius(world: &World, body: EntityId) -> Option<f64> {
+    Some(1.0 + orbit_index(world, body)? as f64)
+}
+
+/// Period in master ticks: `ceil(radius * ORBIT_TICKS_PER_RADIUS)`, min 1.
+pub fn orbit_period_ticks(world: &World, body: EntityId) -> Option<u64> {
+    let r = orbit_radius(world, body)?;
+    Some((r * ORBIT_TICKS_PER_RADIUS).ceil().max(1.0) as u64)
+}
+
+/// Absolute map XY of a body at `tick` (system XY + advancing orbit).
+pub fn body_orbit_xy(world: &World, body: EntityId, tick: u64) -> Option<(f64, f64)> {
+    let b = world.ledger.get_body(body)?;
+    let sys = world.ledger.get(b.system)?;
+    let r = orbit_radius(world, body)?;
+    let period = orbit_period_ticks(world, body)? as f64;
+    let phase = (body.0 % 360) as f64 * std::f64::consts::PI / 180.0;
+    let ang = phase + (tick as f64) * 2.0 * std::f64::consts::PI / period;
+    Some((sys.x + r * ang.cos(), sys.y + r * ang.sin()))
+}
+
+/// In-system transfer clock: `|r_a - r_b|` ceil ticks (0 if same body).
+/// Different systems → None (use `transfer_eta_ticks` / `convoy_eta_ticks`).
+pub fn in_system_transfer_eta(
+    world: &World,
+    from_body: EntityId,
+    to_body: EntityId,
+) -> Option<u64> {
+    if from_body == to_body {
+        return Some(0);
+    }
+    let a = world.ledger.get_body(from_body)?;
+    let b = world.ledger.get_body(to_body)?;
+    if a.system != b.system {
+        return None;
+    }
+    let ra = orbit_radius(world, from_body)?;
+    let rb = orbit_radius(world, to_body)?;
+    Some((ra - rb).abs().ceil().max(1.0) as u64)
+}
+
+/// Patrol radius: max body orbit on the system, or 1.0 if no bodies.
+pub fn patrol_radius(world: &World, system: EntityId) -> Option<f64> {
+    world.ledger.get(system)?;
+    let ids = bodies_sorted(world, system);
+    let mut max_r = 0.0_f64;
+    for id in ids {
+        if let Some(r) = orbit_radius(world, id) {
+            if r > max_r {
+                max_r = r;
+            }
+        }
+    }
+    Some(if max_r > 0.0 { max_r } else { 1.0 })
+}
+
+/// Convoy clock: climb patrol at origin + inter-system transfer + drop at dest.
+pub fn convoy_eta_ticks(world: &World, from: EntityId, to: EntityId) -> Option<u64> {
+    let hop = transfer_eta_ticks(world, from, to)?;
+    let climb = patrol_radius(world, from)?.ceil().max(0.0) as u64;
+    let drop = patrol_radius(world, to)?.ceil().max(0.0) as u64;
+    Some(hop.saturating_add(climb).saturating_add(drop))
+}
+
+/// Shortest jump-link path (BFS). Same system → `[from]`. No path → None.
+pub fn jump_path(world: &World, from: EntityId, to: EntityId) -> Option<Vec<EntityId>> {
+    world.ledger.get(from)?;
+    world.ledger.get(to)?;
+    if from == to {
+        return Some(vec![from]);
+    }
+    let mut prev: std::collections::BTreeMap<EntityId, EntityId> =
+        std::collections::BTreeMap::new();
+    let mut q = std::collections::VecDeque::new();
+    q.push_back(from);
+    prev.insert(from, from);
+    while let Some(cur) = q.pop_front() {
+        let links = match world.ledger.get(cur) {
+            Some(sys) => sys.jump_links.clone(),
+            None => continue,
+        };
+        for nxt in links {
+            if prev.contains_key(&nxt) {
+                continue;
+            }
+            if world.ledger.get(nxt).is_none() {
+                continue;
+            }
+            prev.insert(nxt, cur);
+            if nxt == to {
+                let mut path = vec![to];
+                let mut walk = to;
+                while walk != from {
+                    walk = *prev.get(&walk)?;
+                    path.push(walk);
+                }
+                path.reverse();
+                return Some(path);
+            }
+            q.push_back(nxt);
+        }
+    }
+    None
+}
+
+/// Jump-network ETA: one tick per hop (0 if same system). None if unlinkable.
+pub fn jump_eta_ticks(world: &World, from: EntityId, to: EntityId) -> Option<u64> {
+    let path = jump_path(world, from, to)?;
+    Some(path.len().saturating_sub(1) as u64)
+}
+
 #[cfg(test)]
 mod sky_tests {
     use super::*;
@@ -532,6 +666,43 @@ mod sky_tests {
         assert!(w.ledger.get(a).unwrap().jump_links.contains(&b));
         assert!(w.ledger.get(b).unwrap().jump_links.contains(&a));
         assert_eq!(transfer_eta_ticks(&w, a, b).unwrap(), 1);
+    }
+
+    #[test]
+    fn orbits_advance_and_convoy_eta() {
+        let mut w = World::new(700);
+        let sys = spawn_system_with_catalog(&mut w, false);
+        w.ledger.get_mut(sys).unwrap().x = 0.0;
+        w.ledger.get_mut(sys).unwrap().y = 0.0;
+        let inner = w.ledger.spawn_body(sys);
+        let outer = w.ledger.spawn_body(sys);
+        assert_eq!(orbit_index(&w, inner), Some(0));
+        assert_eq!(orbit_index(&w, outer), Some(1));
+        assert_eq!(orbit_radius(&w, inner).unwrap(), 1.0);
+        assert_eq!(orbit_radius(&w, outer).unwrap(), 2.0);
+        assert_eq!(orbit_period_ticks(&w, inner).unwrap(), 10);
+        let p0 = body_orbit_xy(&w, inner, 0).unwrap();
+        let p1 = body_orbit_xy(&w, inner, 5).unwrap();
+        assert!((p0.0 - p1.0).abs() + (p0.1 - p1.1).abs() > 1e-6, "orbit must advance");
+        assert_eq!(in_system_transfer_eta(&w, inner, inner).unwrap(), 0);
+        assert_eq!(in_system_transfer_eta(&w, inner, outer).unwrap(), 1);
+        assert!((patrol_radius(&w, sys).unwrap() - 2.0).abs() < 1e-12);
+
+        let dest = spawn_system_with_catalog(&mut w, false);
+        w.ledger.get_mut(dest).unwrap().x = 30.0;
+        w.ledger.get_mut(dest).unwrap().y = 40.0;
+        let coast = transfer_eta_ticks(&w, sys, dest).unwrap();
+        let convoy = convoy_eta_ticks(&w, sys, dest).unwrap();
+        assert!(convoy >= coast + 2, "convoy includes climb+drop patrol");
+        assert!(jump_path(&w, sys, dest).is_none());
+        assert!(jump_eta_ticks(&w, sys, dest).is_none());
+        let mid = spawn_system_with_catalog(&mut w, false);
+        link_jump(&mut w, sys, mid).unwrap();
+        link_jump(&mut w, mid, dest).unwrap();
+        let path = jump_path(&w, sys, dest).unwrap();
+        assert_eq!(path, vec![sys, mid, dest]);
+        assert_eq!(jump_eta_ticks(&w, sys, dest).unwrap(), 2);
+        assert_eq!(jump_eta_ticks(&w, sys, sys).unwrap(), 0);
     }
 
 }
