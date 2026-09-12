@@ -75,6 +75,32 @@ pub struct SystemScore {
     pub fuse_urgent: bool,
 }
 
+
+/// Hot-path doctrine knobs only (two f64s) — avoids cloning `EmpireEntity` in minds_tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DoctrineSnap {
+    pub evacuate_vs_die_in_place: f64,
+    pub salt_willingness: f64,
+}
+
+/// NEW: build a tick-hot doctrine snap from an empire (copies two f64s only).
+pub fn doctrine_snap_from_empire(empire: &EmpireEntity) -> DoctrineSnap {
+    DoctrineSnap {
+        evacuate_vs_die_in_place: empire.evacuate_vs_die_in_place,
+        salt_willingness: empire.salt_willingness,
+    }
+}
+
+/// NEW: doctrine-scaled fuse remaining fraction that counts as "urgent Evacuate".
+///
+/// Players feel this: high `evacuate_vs_die_in_place` → evacuate earlier on DryFuse;
+/// low → hold/die-in-place until the fuse is nearly spent. Range ~8%..45% remaining.
+pub fn fuse_evacuate_urgency_frac(snap: &DoctrineSnap) -> f64 {
+    let lo = 0.08;
+    let hi = 0.45;
+    lo + (hi - lo) * snap.evacuate_vs_die_in_place.clamp(0.0, 1.0)
+}
+
 /// Clamp doctrine willingness / bias into `[0.0, 1.0]`.
 pub fn clamp_doctrine(v: f64) -> f64 {
     if v.is_nan() {
@@ -551,7 +577,7 @@ pub fn fuse_is_known(world: &World, empire_id: EntityId, sys: &SystemEntity) -> 
         .unwrap_or(false)
 }
 
-fn fuse_urgent_known(world: &World, sys: &SystemEntity, fuse_known: bool) -> bool {
+fn fuse_urgent_known(world: &World, sys: &SystemEntity, fuse_known: bool, urgency_frac: f64) -> bool {
     if !fuse_known || !sys.depleted {
         return false;
     }
@@ -563,7 +589,8 @@ fn fuse_urgent_known(world: &World, sys: &SystemEntity, fuse_known: bool) -> boo
                 .map(|end| end.saturating_sub(world.master_tick))
         })
         .unwrap_or(fuse_len);
-    (rem as f64) < (fuse_len as f64) * FUSE_URGENCY_FRAC
+    let frac = urgency_frac.clamp(0.05, 0.9);
+    (rem as f64) < (fuse_len as f64) * frac
 }
 
 
@@ -594,7 +621,15 @@ pub fn score_system(
     let map_state = sky::map_state(sys);
     let known = is_system_known(world, empire_id, sys);
     let fuse_known = fuse_is_known(world, empire_id, sys);
-    let fuse_urgent = fuse_urgent_known(world, sys, fuse_known);
+    let snap = world
+        .ledger
+        .get_empire(empire_id)
+        .map(doctrine_snap_from_empire);
+    let urgency_frac = snap
+        .as_ref()
+        .map(fuse_evacuate_urgency_frac)
+        .unwrap_or(FUSE_URGENCY_FRAC);
+    let fuse_urgent = fuse_urgent_known(world, sys, fuse_known, urgency_frac);
     let binding_remainder = sys.binding_remainder;
 
     // 1) Feed first, fuse second. Unknown feed gets a penalty; unknown fuse is finite.
@@ -652,8 +687,8 @@ pub fn score_system(
         fuse_known,
         fuse_urgent,
     };
-    if let Some(empire) = world.ledger.get_empire(empire_id) {
-        score.suggested = suggested_intent(&score, empire);
+    if let Some(snap) = snap {
+        score.suggested = suggested_intent(&score, &snap);
     }
     Some(score)
 }
@@ -664,40 +699,39 @@ pub const DOCTRINE_EVACUATE_HIGH: f64 = 0.85;
 pub const DOCTRINE_SALT_STRIP_FLOOR: f64 = 0.10;
 
 /// Doctrine weight for ranking candidate systems in `minds_tick_stub` (0..1).
-pub fn doctrine_emit_weight(intent: OrderIntent, empire: &EmpireEntity) -> f64 {
+pub fn doctrine_emit_weight(intent: OrderIntent, snap: &DoctrineSnap) -> f64 {
     match intent {
         OrderIntent::PlantCity | OrderIntent::PlantYard | OrderIntent::ClaimFeed => {
-            (1.0 - empire.evacuate_vs_die_in_place).clamp(0.0, 1.0)
+            (1.0 - snap.evacuate_vs_die_in_place).clamp(0.0, 1.0)
         }
-        OrderIntent::StripMine => empire.salt_willingness.clamp(0.0, 1.0),
+        OrderIntent::StripMine => snap.salt_willingness.clamp(0.0, 1.0),
         OrderIntent::Fortify => {
             // Holders: high evacuate-in-place OR low salt aggression.
-            empire
-                .evacuate_vs_die_in_place
-                .max(1.0 - empire.salt_willingness)
+            snap.evacuate_vs_die_in_place
+                .max(1.0 - snap.salt_willingness)
                 .clamp(0.0, 1.0)
         }
         OrderIntent::Abandon | OrderIntent::Evacuate => {
-            empire.evacuate_vs_die_in_place.clamp(0.0, 1.0)
+            snap.evacuate_vs_die_in_place.clamp(0.0, 1.0)
         }
         OrderIntent::ExpandSurvey => 0.5,
         _ => 0.0,
     }
 }
 
-fn tick_rank(score: &SystemScore, empire: &EmpireEntity) -> f64 {
+fn tick_rank(score: &SystemScore, snap: &DoctrineSnap) -> f64 {
     let w = score
         .suggested
-        .map(|i| doctrine_emit_weight(i, empire))
+        .map(|i| doctrine_emit_weight(i, snap))
         .unwrap_or(0.0);
     score.total * (0.5 + 0.5 * w)
 }
 
-/// Map a score into a non-salt `OrderIntent` using empire doctrine knobs.
+/// Map a score into a non-salt `OrderIntent` using a doctrine snap (two f64s).
 ///
 /// Selects among already-built Ai orders (PlantCity/Yard/Fortify/StripMine/Abandon
 /// + Evacuate/Claim/Survey). Salt family is never suggested here.
-pub fn suggested_intent(score: &SystemScore, empire: &EmpireEntity) -> Option<OrderIntent> {
+pub fn suggested_intent(score: &SystemScore, snap: &DoctrineSnap) -> Option<OrderIntent> {
     match score.map_state {
         MapState::Ended => Some(OrderIntent::Abandon),
         MapState::WildernessUnknown => {
@@ -710,13 +744,11 @@ pub fn suggested_intent(score: &SystemScore, empire: &EmpireEntity) -> Option<Or
         MapState::HomePaused => {
             // Stable until flag drops — do not panic-Evacuate solely because depleted.
             if score.binding_remainder >= LONG_FEED {
-                if empire.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
+                if snap.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
                     Some(OrderIntent::Fortify)
                 } else {
                     Some(OrderIntent::PlantYard)
                 }
-            } else if empire.salt_willingness < DOCTRINE_SALT_STRIP_FLOOR {
-                Some(OrderIntent::Fortify)
             } else {
                 Some(OrderIntent::Fortify)
             }
@@ -724,19 +756,19 @@ pub fn suggested_intent(score: &SystemScore, empire: &EmpireEntity) -> Option<Or
         MapState::Feed => {
             if score.binding_remainder >= LONG_FEED {
                 // Ultra-evacuate doctrine plants yards, not cities.
-                if empire.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
+                if snap.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
                     Some(OrderIntent::PlantYard)
                 } else {
                     Some(OrderIntent::PlantCity)
                 }
             } else if score.binding_remainder < SHORT_FEED {
                 // Low salt-willingness holds (Fortify) instead of StripMine.
-                if empire.salt_willingness < DOCTRINE_SALT_STRIP_FLOOR {
+                if snap.salt_willingness < DOCTRINE_SALT_STRIP_FLOOR {
                     Some(OrderIntent::Fortify)
                 } else {
                     Some(OrderIntent::StripMine)
                 }
-            } else if empire.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
+            } else if snap.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
                 Some(OrderIntent::Fortify)
             } else {
                 Some(OrderIntent::PlantYard)
@@ -744,10 +776,10 @@ pub fn suggested_intent(score: &SystemScore, empire: &EmpireEntity) -> Option<Or
         }
         MapState::DryFuse => {
             // Evacuate vs die-in-place on DryFuse / post-HomePaused-drop paths.
-            if empire.evacuate_vs_die_in_place >= 0.5 && score.fuse_known && score.fuse_urgent {
+            if snap.evacuate_vs_die_in_place >= 0.5 && score.fuse_known && score.fuse_urgent {
                 Some(OrderIntent::Evacuate)
             } else if score.binding_remainder > 0.0 {
-                if empire.salt_willingness < DOCTRINE_SALT_STRIP_FLOOR {
+                if snap.salt_willingness < DOCTRINE_SALT_STRIP_FLOOR {
                     Some(OrderIntent::Fortify)
                 } else {
                     Some(OrderIntent::StripMine)
@@ -910,7 +942,11 @@ pub fn minds_tick_stub(world: &mut World) {
         if !empire_needs_minds_tick(world, empire_id) {
             continue;
         }
-        let Some(empire_snap) = world.ledger.get_empire(empire_id).cloned() else {
+        let Some(snap) = world
+            .ledger
+            .get_empire(empire_id)
+            .map(doctrine_snap_from_empire)
+        else {
             continue;
         };
         let system_ids: Vec<EntityId> = world.ledger.systems().map(|(id, _)| *id).collect();
@@ -929,7 +965,7 @@ pub fn minds_tick_stub(world: &mut World) {
             if empire_has_ai_order_targeting(world, empire_id, sid) {
                 continue;
             }
-            let rank = tick_rank(&score, &empire_snap);
+            let rank = tick_rank(&score, &snap);
             if best.is_none() || rank > best_rank {
                 best_rank = rank;
                 best = Some(score);
@@ -1999,6 +2035,99 @@ mod minds_tests {
         assert!(body.structure_soak >= FORTIFY_STRUCTURE_SOAK);
     }
 
+
+
+
+    #[test]
+    fn fuse_evacuate_urgency_frac_scales_with_doctrine() {
+        let low = DoctrineSnap {
+            evacuate_vs_die_in_place: 0.0,
+            salt_willingness: 0.15,
+        };
+        let high = DoctrineSnap {
+            evacuate_vs_die_in_place: 1.0,
+            salt_willingness: 0.15,
+        };
+        assert!((fuse_evacuate_urgency_frac(&low) - 0.08).abs() < 1e-9);
+        assert!((fuse_evacuate_urgency_frac(&high) - 0.45).abs() < 1e-9);
+        assert!(fuse_evacuate_urgency_frac(&high) > fuse_evacuate_urgency_frac(&low));
+    }
+
+    #[test]
+    fn doctrine_early_evacuate_on_dry_fuse() {
+        let mut w = World::new(180);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let fuse_len = w.globals.fuse_length_ticks().max(1);
+        // ~30% fuse remaining — urgent for high-evacuate doctrine (45%), not for low (8%).
+        let rem = ((fuse_len as f64) * 0.30) as u64;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.depleted = true;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.binding_remainder = 50.0;
+            s.fuse_end_tick = Some(w.master_tick.saturating_add(rem));
+            s.fuse_remaining = Some(rem);
+            s.home_empire = Some(EmpireId(empire.0));
+            s.home_flag = false;
+            s.is_home_capital = false;
+        }
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.evacuate_vs_die_in_place = 0.95;
+            e.salt_willingness = 0.15;
+        }
+        let score_hi = score_system(&w, empire, sys).unwrap();
+        assert_eq!(sky::map_state(w.ledger.get(sys).unwrap()), MapState::DryFuse);
+        assert!(score_hi.fuse_known);
+        assert!(score_hi.fuse_urgent, "high evacuate doctrine must treat 30% rem as urgent");
+        assert_eq!(score_hi.suggested, Some(OrderIntent::Evacuate));
+
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.evacuate_vs_die_in_place = 0.1;
+        }
+        let score_lo = score_system(&w, empire, sys).unwrap();
+        assert!(
+            !score_lo.fuse_urgent,
+            "low evacuate doctrine must NOT treat 30% rem as urgent"
+        );
+        assert_ne!(score_lo.suggested, Some(OrderIntent::Evacuate));
+    }
+
+    #[test]
+    fn doctrine_snap_from_empire_copies_two_f64s() {
+        let mut w = World::new(170);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.evacuate_vs_die_in_place = 0.91;
+            e.salt_willingness = 0.22;
+            e.punishment_willingness = 0.77; // not part of snap
+        }
+        let snap = doctrine_snap_from_empire(w.ledger.get_empire(empire).unwrap());
+        assert!((snap.evacuate_vs_die_in_place - 0.91).abs() < 1e-12);
+        assert!((snap.salt_willingness - 0.22).abs() < 1e-12);
+        // Hot-path ranking uses snap, not a cloned EmpireEntity.
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 800.0;
+            s.depleted = false;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.home_empire = Some(EmpireId(empire.0));
+        }
+        let score = score_system(&w, empire, sys).unwrap();
+        assert_eq!(score.suggested, Some(OrderIntent::PlantYard));
+        let rank = tick_rank(&score, &snap);
+        assert!(rank.is_finite());
+    }
 
     #[test]
     fn doctrine_selects_plant_yard_when_evacuate_high() {
