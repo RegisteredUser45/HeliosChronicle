@@ -467,6 +467,22 @@ pub fn jump_eta_ticks(world: &World, from: EntityId, to: EntityId) -> Option<u64
     Some(path.len().saturating_sub(1) as u64)
 }
 
+/// Jump neighbors visible from `system` only after surveyed OR claimed (Lock 3).
+/// Topology stays on wilderness; this is the B visibility filter.
+pub fn visible_jump_neighbors(world: &World, system: EntityId) -> Vec<EntityId> {
+    let Some(sys) = world.ledger.get(system) else {
+        return Vec::new();
+    };
+    if sys.is_wilderness_immortal() {
+        return Vec::new();
+    }
+    sys.jump_links
+        .iter()
+        .copied()
+        .filter(|id| world.ledger.get(*id).is_some())
+        .collect()
+}
+
 /// In-flight jump: remaining clock starts at `jump_eta_ticks` and is spent by dt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpTransfer {
@@ -792,6 +808,26 @@ mod sky_tests {
         let here = begin_jump_transfer(&w, a, a).unwrap();
         assert!(here.arrived);
         assert_eq!(here.remaining_ticks, 0);
+    }
+
+    #[test]
+    fn visible_jump_neighbors_need_survey_or_claim() {
+        let mut w = World::new(810);
+        let a = w.ledger.spawn_wilderness_system();
+        let b = w.ledger.spawn_wilderness_system();
+        link_jump(&mut w, a, b).unwrap();
+        assert!(visible_jump_neighbors(&w, a).is_empty());
+        assert!(visible_jump_neighbors(&w, b).is_empty());
+        survey_system(&mut w, a);
+        assert_eq!(visible_jump_neighbors(&w, a), vec![b]);
+        assert!(visible_jump_neighbors(&w, b).is_empty(), "dest still immortal");
+
+        let c = w.ledger.spawn_wilderness_system();
+        let d = w.ledger.spawn_wilderness_system();
+        link_jump(&mut w, c, d).unwrap();
+        claim_system(&mut w, c);
+        assert_eq!(visible_jump_neighbors(&w, c), vec![d]);
+        assert!(visible_jump_neighbors(&w, EntityId(u64::MAX)).is_empty());
     }
 
 }
