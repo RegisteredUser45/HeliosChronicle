@@ -1,9 +1,12 @@
 //! eframe application: shell chrome around the live [`World`].
 
+use std::collections::BTreeSet;
+
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 
 use crate::entity::EntityId;
 use crate::event::EventKind;
+use crate::hulls::{self, ShipInstance};
 use crate::sky;
 use crate::world::World;
 
@@ -28,6 +31,12 @@ pub struct HeliosApp {
     /// Wall-clock accumulator for unpaused ticking (seconds).
     tick_accum: f32,
     inspector_open: bool,
+    /// Body inspector windows currently open (several at once OK).
+    open_bodies: BTreeSet<EntityId>,
+    /// Ship / fleet-detail inspector windows currently open.
+    open_ships: BTreeSet<EntityId>,
+    /// Fleet list window (ShipInstance roster; no TaskGroup type yet).
+    fleet_open: bool,
 }
 
 impl HeliosApp {
@@ -63,6 +72,9 @@ impl HeliosApp {
             viewpoint: Viewpoint::Operator,
             tick_accum: 0.0,
             inspector_open: false,
+            open_bodies: BTreeSet::new(),
+            open_ships: BTreeSet::new(),
+            fleet_open: false,
         }
     }
 
@@ -106,6 +118,401 @@ impl HeliosApp {
         let s = format!("{kind:?}");
         s.chars().take(72).collect()
     }
+
+    fn show_system_inspector(&mut self, ctx: &egui::Context) {
+        if !self.inspector_open {
+            return;
+        }
+        let mut open = true;
+        let title = match self.selected {
+            Some(id) => format!("System inspector — {id}"),
+            None => "System inspector".into(),
+        };
+        let mut open_body: Option<EntityId> = None;
+        let mut open_ship: Option<EntityId> = None;
+        let mut open_fleet = false;
+
+        egui::Window::new(title)
+            .id(egui::Id::new("helios_system_inspector"))
+            .open(&mut open)
+            .default_width(340.0)
+            .show(ctx, |ui| {
+                if let Some(id) = self.selected {
+                    if let Some(sys) = self.world.ledger().get(id) {
+                        ui.label(RichText::new("breadcrumb: System").weak());
+                        ui.separator();
+                        ui.monospace(format!("id:              {id}"));
+                        ui.monospace(format!("x/y:             {:.2} / {:.2}", sys.x, sys.y));
+                        ui.monospace(format!(
+                            "binding_remainder:{:.3}",
+                            sys.binding_remainder
+                        ));
+                        ui.monospace(format!("depleted:        {}", sys.depleted));
+                        ui.monospace(format!("fuse_end_tick:   {:?}", sys.fuse_end_tick));
+                        ui.monospace(format!("fuse_remaining:  {:?}", sys.fuse_remaining));
+                        let state = sky::map_state(sys);
+                        ui.monospace(format!("map_state:       {}", state.as_str()));
+                        ui.monospace(format!(
+                            "wilderness:      {}  surveyed: {}  claimed: {}",
+                            sys.wilderness, sys.surveyed, sys.claimed
+                        ));
+                        ui.monospace(format!(
+                            "home:            capital={} flag={} paused={}",
+                            sys.is_home_capital, sys.home_flag, sys.fuse_paused
+                        ));
+                        ui.monospace(format!("ended:           {}", sys.ended));
+                        ui.monospace(format!("jump_links:      {}", sys.jump_links.len()));
+                        ui.monospace(format!("lod_hint:        {:?}", sys.lod_hint));
+                    } else {
+                        ui.label("System not found on ledger.");
+                    }
+
+                    ui.separator();
+                    ui.label(RichText::new("Bodies in system (System → Body)").strong());
+                    let bodies: Vec<(EntityId, f64, bool)> = self
+                        .world
+                        .ledger()
+                        .bodies_for_system(id)
+                        .map(|(bid, b)| (*bid, b.pops, b.automation_active))
+                        .collect();
+                    if bodies.is_empty() {
+                        ui.label("(no bodies)");
+                    } else {
+                        for (bid, pops, auto) in bodies {
+                            ui.horizontal(|ui| {
+                                ui.monospace(format!("body {bid}  pops={pops:.0} auto={auto}"));
+                                if ui.button("Open Body").clicked() {
+                                    open_body = Some(bid);
+                                }
+                            });
+                        }
+                    }
+
+                    ui.separator();
+                    ui.label(RichText::new("Fleet (System → Ship)").strong());
+                    ui.label(
+                        RichText::new(
+                            "ShipInstance has no system field yet — listing all world.ships",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                    let ships: Vec<EntityId> = self.world.ships.keys().copied().collect();
+                    if ships.is_empty() {
+                        ui.label("(no ships in world.ships)");
+                    } else {
+                        for sid in ships.iter().take(24) {
+                            ui.horizontal(|ui| {
+                                ui.monospace(format!("ship {sid}"));
+                                if ui.button("Open Ship").clicked() {
+                                    open_ship = Some(*sid);
+                                }
+                            });
+                        }
+                        if ships.len() > 24 {
+                            ui.label(format!("… +{} more (see Fleet list)", ships.len() - 24));
+                        }
+                    }
+                    if ui.button("Open Fleet list…").clicked() {
+                        open_fleet = true;
+                    }
+                } else {
+                    ui.label("Select a system on the map.");
+                }
+            });
+
+        if let Some(bid) = open_body {
+            self.open_bodies.insert(bid);
+        }
+        if let Some(sid) = open_ship {
+            self.open_ships.insert(sid);
+        }
+        if open_fleet {
+            self.fleet_open = true;
+        }
+        if !open {
+            self.inspector_open = false;
+        }
+    }
+
+    fn show_body_inspectors(&mut self, ctx: &egui::Context) {
+        let ids: Vec<EntityId> = self.open_bodies.iter().copied().collect();
+        let mut closed: Vec<EntityId> = Vec::new();
+        for bid in ids {
+            let mut open = true;
+            let parent_sys = self
+                .world
+                .ledger()
+                .get_body(bid)
+                .map(|b| b.system);
+            let title = format!("Body inspector — {bid}");
+            egui::Window::new(title)
+                .id(egui::Id::new(("helios_body", bid.0)))
+                .open(&mut open)
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    if let Some(sys) = parent_sys {
+                        ui.label(
+                            RichText::new(format!("breadcrumb: System {sys} → Body {bid}")).weak(),
+                        );
+                    } else {
+                        ui.label(RichText::new(format!("breadcrumb: Body {bid}")).weak());
+                    }
+                    ui.separator();
+                    match self.world.ledger().get_body(bid) {
+                        Some(body) => {
+                            // Tabular rows from BodyEntity fields on the live ledger.
+                            egui::Grid::new(("body_grid", bid.0))
+                                .num_columns(2)
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    ui.label("id");
+                                    ui.monospace(body.id.to_string());
+                                    ui.end_row();
+                                    ui.label("system");
+                                    ui.monospace(body.system.to_string());
+                                    ui.end_row();
+                                    ui.label("pops");
+                                    ui.monospace(format!("{:.6}", body.pops));
+                                    ui.end_row();
+                                    ui.label("automation_active");
+                                    ui.monospace(body.automation_active.to_string());
+                                    ui.end_row();
+                                    ui.label("structure_soak");
+                                    ui.monospace(format!("{:.6}", body.structure_soak));
+                                    ui.end_row();
+                                    ui.label("power_soak");
+                                    ui.monospace(format!("{:.6}", body.power_soak));
+                                    ui.end_row();
+                                    ui.label("upkeep_soak");
+                                    ui.monospace(format!("{:.6}", body.upkeep_soak));
+                                    ui.end_row();
+                                    ui.label("layers.atmosphere_pressure");
+                                    ui.monospace(format!(
+                                        "{:.6}",
+                                        body.layers.atmosphere_pressure
+                                    ));
+                                    ui.end_row();
+                                    ui.label("layers.temperature");
+                                    ui.monospace(format!("{:.6}", body.layers.temperature));
+                                    ui.end_row();
+                                    ui.label("layers.radiation");
+                                    ui.monospace(format!("{:.6}", body.layers.radiation));
+                                    ui.end_row();
+                                    ui.label("layers.toxins_fallout");
+                                    ui.monospace(format!("{:.6}", body.layers.toxins_fallout));
+                                    ui.end_row();
+                                    ui.label("layers.biosphere");
+                                    ui.monospace(format!("{:.6}", body.layers.biosphere));
+                                    ui.end_row();
+                                });
+                            ui.separator();
+                            ui.label(
+                                RichText::new(
+                                    "(colonies/outposts: no separate types on BodyEntity yet)",
+                                )
+                                .weak()
+                                .small(),
+                            );
+                        }
+                        None => {
+                            ui.label("Body not found on ledger.");
+                        }
+                    }
+                });
+            if !open {
+                closed.push(bid);
+            }
+        }
+        for id in closed {
+            self.open_bodies.remove(&id);
+        }
+    }
+
+    fn show_fleet_list(&mut self, ctx: &egui::Context) {
+        if !self.fleet_open {
+            return;
+        }
+        let mut open = true;
+        let mut open_ship: Option<EntityId> = None;
+        let ships: Vec<(EntityId, EntityId, f64, f64, f64)> = self
+            .world
+            .ships
+            .iter()
+            .map(|(id, s)| (*id, s.design_id, s.fuel_qty, s.damage, s.cargo_qty))
+            .collect();
+
+        egui::Window::new("Fleet inspector — roster")
+            .id(egui::Id::new("helios_fleet_list"))
+            .open(&mut open)
+            .default_width(420.0)
+            .default_height(280.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("breadcrumb: System → Ship (fleet = list of ShipInstances)")
+                        .weak(),
+                );
+                ui.label(format!(
+                    "world.ships = {}   ship_designs = {}",
+                    ships.len(),
+                    self.world.ship_designs.len()
+                ));
+                if let Some(sys) = self.selected {
+                    ui.label(
+                        RichText::new(format!(
+                            "selected system {sys}: no ShipInstance.system field to filter"
+                        ))
+                        .weak()
+                        .small(),
+                    );
+                }
+                ui.separator();
+                ScrollArea::vertical().show(ui, |ui| {
+                    if ships.is_empty() {
+                        ui.label("(no ships — build via hulls / operator)");
+                    } else {
+                        for (sid, did, fuel, dmg, cargo) in &ships {
+                            ui.horizontal(|ui| {
+                                ui.monospace(format!(
+                                    "ship {sid}  design={did}  fuel={fuel:.2}  dmg={dmg:.3}  cargo={cargo:.2}"
+                                ));
+                                if ui.button("Inspect").clicked() {
+                                    open_ship = Some(*sid);
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+
+        if let Some(sid) = open_ship {
+            self.open_ships.insert(sid);
+        }
+        if !open {
+            self.fleet_open = false;
+        }
+    }
+
+    fn show_ship_inspectors(&mut self, ctx: &egui::Context) {
+        let ids: Vec<EntityId> = self.open_ships.iter().copied().collect();
+        let mut closed: Vec<EntityId> = Vec::new();
+        for sid in ids {
+            let mut open = true;
+            let title = format!("Ship inspector — {sid}");
+            // Snapshot ship + design name for display without awkward borrows.
+            let ship: Option<ShipInstance> = self.world.ships.get(&sid).cloned();
+            let design_name = ship.as_ref().and_then(|s| {
+                self.world
+                    .ship_designs
+                    .get(&s.design_id)
+                    .map(|d| d.name.clone())
+            });
+            let design = ship
+                .as_ref()
+                .and_then(|s| self.world.ship_designs.get(&s.design_id).cloned());
+            let cap = design.as_ref().map(hulls::cargo_capacity).unwrap_or(0.0);
+            let can_mv = match (&design, &ship) {
+                (Some(d), Some(s)) => hulls::can_move(d, s),
+                _ => false,
+            };
+
+            egui::Window::new(title)
+                .id(egui::Id::new(("helios_ship", sid.0)))
+                .open(&mut open)
+                .default_width(380.0)
+                .show(ctx, |ui| {
+                    ui.label(
+                        RichText::new(format!("breadcrumb: System → Ship {sid}")).weak(),
+                    );
+                    ui.separator();
+                    match &ship {
+                        Some(s) => {
+                            egui::Grid::new(("ship_grid", sid.0))
+                                .num_columns(2)
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    ui.label("id");
+                                    ui.monospace(s.id.to_string());
+                                    ui.end_row();
+                                    ui.label("system location");
+                                    ui.monospace(
+                                        "(none on ShipInstance — location not tracked yet)"
+                                            .to_string(),
+                                    );
+                                    ui.end_row();
+                                    ui.label("design_id");
+                                    ui.monospace(s.design_id.to_string());
+                                    ui.end_row();
+                                    ui.label("design name");
+                                    ui.monospace(
+                                        design_name.clone().unwrap_or_else(|| "(missing)".into()),
+                                    );
+                                    ui.end_row();
+                                    ui.label("fuel_tier");
+                                    ui.monospace(s.fuel_tier.clone());
+                                    ui.end_row();
+                                    ui.label("fuel_qty");
+                                    ui.monospace(format!("{:.6}", s.fuel_qty));
+                                    ui.end_row();
+                                    ui.label("damage");
+                                    ui.monospace(format!("{:.6}", s.damage));
+                                    ui.end_row();
+                                    ui.label("crew");
+                                    ui.monospace(format!("{:.6}", s.crew));
+                                    ui.end_row();
+                                    ui.label("maintenance");
+                                    ui.monospace(format!("{:.6}", s.maintenance));
+                                    ui.end_row();
+                                    ui.label("cargo_qty");
+                                    ui.monospace(format!("{:.6}", s.cargo_qty));
+                                    ui.end_row();
+                                    ui.label("cargo_capacity");
+                                    ui.monospace(format!("{cap:.6}"));
+                                    ui.end_row();
+                                    ui.label("can_move");
+                                    ui.monospace(can_mv.to_string());
+                                    ui.end_row();
+                                    ui.label("planetary_strike");
+                                    ui.monospace(s.planetary_strike.to_string());
+                                    ui.end_row();
+                                    ui.label("sidearm_caliber");
+                                    ui.monospace(format!("{:.6}", s.sidearm_caliber));
+                                    ui.end_row();
+                                });
+                            ui.separator();
+                            ui.label(RichText::new("magazines").strong());
+                            if s.magazines.is_empty() {
+                                ui.label("(empty)");
+                            } else {
+                                for (ammo, qty) in &s.magazines {
+                                    ui.monospace(format!("{ammo}: {qty:.3}"));
+                                }
+                            }
+                            if let Some(d) = &design {
+                                ui.separator();
+                                ui.label(RichText::new("design modules").strong());
+                                ui.monospace(format!(
+                                    "crew_req={:.1} mass={:.1} fuel_tier={}",
+                                    d.crew_req, d.mass, d.fuel_tier
+                                ));
+                                for m in &d.modules {
+                                    ui.monospace(format!("  {m}"));
+                                }
+                            }
+                        }
+                        None => {
+                            ui.label("Ship not found in world.ships.");
+                        }
+                    }
+                });
+            if !open {
+                closed.push(sid);
+            }
+        }
+        for id in closed {
+            self.open_ships.remove(&id);
+        }
+    }
 }
 
 impl eframe::App for HeliosApp {
@@ -127,10 +534,12 @@ impl eframe::App for HeliosApp {
                 ui.heading("Helios Chronicle");
                 ui.separator();
                 ui.label(format!(
-                    "seed={}  tick={}  systems={}  lod={:?}  dt={}",
+                    "seed={}  tick={}  systems={}  bodies={}  ships={}  lod={:?}  dt={}",
                     self.world.seed(),
                     self.world.master_tick(),
                     self.world.ledger().len(),
+                    self.world.ledger().bodies_len(),
+                    self.world.ships.len(),
                     self.world.lod(),
                     self.world.current_dt()
                 ));
@@ -186,6 +595,10 @@ impl eframe::App for HeliosApp {
                         "(filter chrome stub — knowledge soft)",
                     );
                 }
+                ui.separator();
+                if ui.button("Fleet").clicked() {
+                    self.fleet_open = true;
+                }
             });
         });
 
@@ -219,52 +632,11 @@ impl eframe::App for HeliosApp {
                     });
             });
 
-        // System inspector as a floating egui window (opens on map select).
-        if self.inspector_open {
-            let mut open = true;
-            let title = match self.selected {
-                Some(id) => format!("System inspector — {id}"),
-                None => "System inspector".into(),
-            };
-            egui::Window::new(title)
-                .open(&mut open)
-                .default_width(320.0)
-                .show(ctx, |ui| {
-                    if let Some(id) = self.selected {
-                        if let Some(sys) = self.world.ledger().get(id) {
-                            let state = sky::map_state(sys);
-                            ui.monospace(format!("id:              {id}"));
-                            ui.monospace(format!("x/y:             {:.2} / {:.2}", sys.x, sys.y));
-                            ui.monospace(format!(
-                                "binding_remainder:{:.3}",
-                                sys.binding_remainder
-                            ));
-                            ui.monospace(format!("depleted:        {}", sys.depleted));
-                            ui.monospace(format!("fuse_end_tick:   {:?}", sys.fuse_end_tick));
-                            ui.monospace(format!("fuse_remaining:  {:?}", sys.fuse_remaining));
-                            ui.monospace(format!("map_state:       {}", state.as_str()));
-                            ui.monospace(format!(
-                                "wilderness:      {}  surveyed: {}  claimed: {}",
-                                sys.wilderness, sys.surveyed, sys.claimed
-                            ));
-                            ui.monospace(format!(
-                                "home:            capital={} flag={} paused={}",
-                                sys.is_home_capital, sys.home_flag, sys.fuse_paused
-                            ));
-                            ui.monospace(format!("ended:           {}", sys.ended));
-                            ui.monospace(format!("jump_links:      {}", sys.jump_links.len()));
-                            ui.monospace(format!("lod_hint:        {:?}", sys.lod_hint));
-                        } else {
-                            ui.label("System not found on ledger.");
-                        }
-                    } else {
-                        ui.label("Select a system on the map.");
-                    }
-                });
-            if !open {
-                self.inspector_open = false;
-            }
-        }
+        // Floating inspectors (several may be open at once — STATEMENT §11).
+        self.show_system_inspector(ctx);
+        self.show_fleet_list(ctx);
+        self.show_body_inspectors(ctx);
+        self.show_ship_inspectors(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label("Map (pan: drag · zoom: scroll · click: inspect)");
