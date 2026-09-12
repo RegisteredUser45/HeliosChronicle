@@ -263,7 +263,24 @@ pub fn salvage_into_feed(world: &mut World, system: EntityId, amount: f64) -> Re
     Ok(sys.salvage_stock)
 }
 
-
+/// Consume B remnant last-harvest into the C salvage feed.
+/// Does not refill veins or change `binding_remainder`. 0 if no remnant.
+pub fn harvest_remnant(world: &mut World, system: EntityId) -> Result<f64, MatterError> {
+    let take = {
+        let sys = world
+            .ledger
+            .get_mut(system)
+            .ok_or(MatterError::SystemNotFound(system))?;
+        let take = sys.remnant_harvest.unwrap_or(0.0).max(0.0);
+        sys.remnant_harvest = None;
+        take
+    };
+    if take == 0.0 {
+        return Ok(0.0);
+    }
+    salvage_into_feed(world, system, take)?;
+    Ok(take)
+}
 
 /// Materialize `binding_stocks` map into Deposit veins (default State extractor).
 ///
@@ -891,5 +908,39 @@ mod matter_tests {
         extract_state(&mut w, id, 1.0).unwrap();
         let after = w.ledger.get(id).unwrap().binding_remainder;
         assert!(after <= before + 1e-9);
+    }
+
+    #[test]
+    fn harvest_remnant_consumes_fuse_end_stub() {
+        use crate::operator::Operator;
+        let mut w = World::new(410);
+        let id = claimed_system(&mut w);
+        add_deposit(
+            &mut w,
+            id,
+            Deposit::new("stock.ore_binding", 40.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        {
+            let mut op = Operator::new(&mut w);
+            op.arm_fuse(id, 3).unwrap();
+        }
+        w.tick(3);
+        let sys = w.ledger.get(id).unwrap();
+        assert!(sys.ended);
+        let remnant = sys.remnant_harvest.expect("B remnant stub");
+        assert!(remnant > 0.0);
+        let vein: f64 = sys.deposits.iter().map(|d| d.quantity).sum();
+        let rem = sys.binding_remainder;
+        let salvage_before = sys.salvage_stock;
+        let moved = harvest_remnant(&mut w, id).unwrap();
+        assert!((moved - remnant).abs() < 1e-9);
+        let sys = w.ledger.get(id).unwrap();
+        assert!(sys.remnant_harvest.is_none());
+        assert!((sys.salvage_stock - (salvage_before + remnant)).abs() < 1e-9);
+        let vein_after: f64 = sys.deposits.iter().map(|d| d.quantity).sum();
+        assert!((vein_after - vein).abs() < 1e-9, "veins must not refill");
+        assert!((sys.binding_remainder - rem).abs() < 1e-9);
+        assert_eq!(harvest_remnant(&mut w, id).unwrap(), 0.0);
     }
 }
