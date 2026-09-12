@@ -60,8 +60,7 @@ pub use world::World;
 pub use worlds::{apply_facility_soaks, apply_layer_burst, apply_life_support_drain, apply_pop_deficits, compute_deficits, consume_stock_at_system, evacuate_body, facility_bom_recipe, install_facility_on_body, life_support_bill, reaggregate_after_life_support_drain, DeficitReport, WorldsError};
 pub use sensors::{
     detect_strike, discover_wreck, in_sensor_range, poll_signal_envelope, receive_signal, sense_system,
-    sensor_jump_hops, track_fleet, within_sensor_range, SENSOR_RANGE_STUB,
-};
+    sensor_jump_hops, track_fleet, within_sensor_range, SENSOR_RANGE_STUB, refresh_last_known_in_sensor_range};
 pub use violence::{
     apply_hull_damage, salt_layer_delta, salt_world, fulfill_mercenary_hire, strike_fire_ship, strike_layers, strike_with_ship, StrikeKind,
     ViolenceError, ViolenceOutcome, KO_SEVERITY_THRESHOLD, SALT_BIOSPHERE_DELTA,

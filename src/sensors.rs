@@ -60,6 +60,22 @@ pub fn in_sensor_range(world: &World, observer: EmpireId, system: EntityId, forc
         .any(|&vantage| within_sensor_range(world, vantage, system))
 }
 
+
+/// Refresh last-known fog fixes for every system currently in the observer's sensor range.
+///
+/// Returns how many systems were refreshed (each calls [`sense_system`]).
+pub fn refresh_last_known_in_sensor_range(world: &mut World, observer: EmpireId) -> usize {
+    let systems: Vec<EntityId> = world.ledger.systems().map(|(id, _)| *id).collect();
+    let mut n = 0;
+    for system in systems {
+        if in_sensor_range(world, observer, system, false) {
+            sense_system(world, observer, system);
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Detect a strike / violence event at `system` if in range: refresh fog fix.
 ///
 /// Returns true when detection occurred.
@@ -324,6 +340,29 @@ mod tests {
             assert!(!detect_strike(&mut w, obs, b, false));
             assert!(detect_strike(&mut w, obs, b, true));
         }
+    }
+
+
+    #[test]
+    fn refresh_last_known_updates_tick() {
+        use crate::sky::link_jump;
+
+        let mut w = World::new(30);
+        let systems: Vec<_> = w.ledger().systems().map(|(id, _)| *id).collect();
+        assert!(systems.len() >= 2);
+        let a = systems[0];
+        let b = systems[1];
+        link_jump(&mut w, a, b).unwrap();
+        let obs = EmpireId(3);
+        sense_system(&mut w, obs, a);
+        let before = w.contact.get(obs).unwrap().fog.known_systems[&a].last_known_tick;
+        w.tick(1);
+        let n = refresh_last_known_in_sensor_range(&mut w, obs);
+        assert!(n >= 1);
+        let after_a = w.contact.get(obs).unwrap().fog.known_systems[&a].last_known_tick;
+        assert!(after_a > before);
+        // Neighbor within hop range also gets a fix.
+        assert!(w.contact.get(obs).unwrap().fog.known_systems.contains_key(&b));
     }
 
 }
