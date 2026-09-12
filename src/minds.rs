@@ -110,6 +110,16 @@ pub fn plant_city_pops_for_doctrine(snap: &DoctrineSnap) -> f64 {
     PLANT_CITY_POPS * (0.5 + 0.5 * settle)
 }
 
+/// NEW: StripMine drain scaled by `salt_willingness`.
+///
+/// Players feel this: high-salt empires strip harder per Ai order; low-salt
+/// strip gently. Range half..full `STRIP_MINE_EXTRACT`.
+pub fn strip_mine_extract_for_doctrine(snap: &DoctrineSnap) -> f64 {
+    let a = snap.salt_willingness.clamp(0.0, 1.0);
+    STRIP_MINE_EXTRACT * (0.5 + 0.5 * a)
+}
+
+
 
 /// Clamp doctrine willingness / bias into `[0.0, 1.0]`.
 pub fn clamp_doctrine(v: f64) -> f64 {
@@ -390,10 +400,15 @@ pub fn execute_abandon_intent(
 /// C reaggregates binding and may arm depletion. Returns drained amount (0 if none).
 pub fn execute_strip_mine_intent(
     world: &mut World,
-    _empire_id: EntityId,
+    empire_id: EntityId,
     system_id: EntityId,
 ) -> f64 {
-    matter::extract_state(world, system_id, STRIP_MINE_EXTRACT).unwrap_or(0.0)
+    let amount = world
+        .ledger
+        .get_empire(empire_id)
+        .map(|e| strip_mine_extract_for_doctrine(&doctrine_snap_from_empire(e)))
+        .unwrap_or(STRIP_MINE_EXTRACT);
+    matter::extract_state(world, system_id, amount).unwrap_or(0.0)
 }
 
 
@@ -1953,6 +1968,22 @@ mod minds_tests {
     }
 
 
+
+    #[test]
+    fn strip_mine_extract_scales_with_salt_doctrine() {
+        let mild = DoctrineSnap {
+            evacuate_vs_die_in_place: 0.6,
+            salt_willingness: 0.0,
+        };
+        let harsh = DoctrineSnap {
+            evacuate_vs_die_in_place: 0.6,
+            salt_willingness: 1.0,
+        };
+        assert!((strip_mine_extract_for_doctrine(&mild) - STRIP_MINE_EXTRACT * 0.5).abs() < 1e-9);
+        assert!((strip_mine_extract_for_doctrine(&harsh) - STRIP_MINE_EXTRACT).abs() < 1e-9);
+        assert!(strip_mine_extract_for_doctrine(&harsh) > strip_mine_extract_for_doctrine(&mild));
+    }
+
     #[test]
     fn ai_strip_mine_extracts_state() {
         let mut w = World::new(140);
@@ -1988,6 +2019,9 @@ mod minds_tests {
             after < before,
             "StripMine should drain state deposits (before={before} after={after})"
         );
+        let drained = strip_mine_extract_for_doctrine(&doctrine_snap_from_empire(
+            w.ledger.get_empire(empire).unwrap(),
+        ));
         let qty: f64 = w
             .ledger
             .get(sys)
@@ -1997,7 +2031,10 @@ mod minds_tests {
             .filter(|d| d.extractor == crate::matter::ExtractorKind::State)
             .map(|d| d.quantity)
             .sum();
-        assert!((qty - 75.0).abs() < 1e-6, "100-25=75 left, got {qty}");
+        assert!(
+            (qty - (100.0 - drained)).abs() < 1e-6,
+            "100-{drained} left, got {qty}"
+        );
     }
 
 
