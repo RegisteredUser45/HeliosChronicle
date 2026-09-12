@@ -467,6 +467,61 @@ pub fn jump_eta_ticks(world: &World, from: EntityId, to: EntityId) -> Option<u64
     Some(path.len().saturating_sub(1) as u64)
 }
 
+/// In-flight jump: remaining clock starts at `jump_eta_ticks` and is spent by dt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpTransfer {
+    pub from: EntityId,
+    pub to: EntityId,
+    pub path: Vec<EntityId>,
+    pub remaining_ticks: u64,
+    pub total_ticks: u64,
+    pub arrived: bool,
+}
+
+impl JumpTransfer {
+    /// Ticks of the ETA clock already spent.
+    pub fn ticks_spent(&self) -> u64 {
+        self.total_ticks.saturating_sub(self.remaining_ticks)
+    }
+}
+
+/// Start a jump transfer. None if no jump path. Same system arrives immediately.
+pub fn begin_jump_transfer(world: &World, from: EntityId, to: EntityId) -> Option<JumpTransfer> {
+    let path = jump_path(world, from, to)?;
+    let total = path.len().saturating_sub(1) as u64;
+    Some(JumpTransfer {
+        from,
+        to,
+        path,
+        remaining_ticks: total,
+        total_ticks: total,
+        arrived: total == 0,
+    })
+}
+
+/// Location after spending the clock: one hop per spent tick, dest once arrived.
+pub fn jump_transfer_location(xfer: &JumpTransfer) -> EntityId {
+    if xfer.arrived || xfer.path.is_empty() {
+        return xfer.to;
+    }
+    let idx = (xfer.ticks_spent() as usize).min(xfer.path.len().saturating_sub(1));
+    xfer.path[idx]
+}
+
+/// Spend `dt` from the remaining ETA (coarse dt still arrives once, remaining=0).
+/// Returns whether the transfer has arrived after this spend.
+pub fn spend_jump_transfer(xfer: &mut JumpTransfer, dt: u64) -> bool {
+    if xfer.arrived {
+        return true;
+    }
+    xfer.remaining_ticks = xfer.remaining_ticks.saturating_sub(dt);
+    if xfer.remaining_ticks == 0 {
+        xfer.arrived = true;
+    }
+    xfer.arrived
+}
+
+
 #[cfg(test)]
 mod sky_tests {
     use super::*;
@@ -703,6 +758,40 @@ mod sky_tests {
         assert_eq!(path, vec![sys, mid, dest]);
         assert_eq!(jump_eta_ticks(&w, sys, dest).unwrap(), 2);
         assert_eq!(jump_eta_ticks(&w, sys, sys).unwrap(), 0);
+    }
+
+    #[test]
+    fn jump_transfer_spends_eta_clock() {
+        let mut w = World::new(801);
+        let a = spawn_system_with_catalog(&mut w, false);
+        let b = spawn_system_with_catalog(&mut w, false);
+        let c = spawn_system_with_catalog(&mut w, false);
+        assert!(begin_jump_transfer(&w, a, c).is_none());
+        link_jump(&mut w, a, b).unwrap();
+        link_jump(&mut w, b, c).unwrap();
+        let mut xfer = begin_jump_transfer(&w, a, c).unwrap();
+        assert_eq!(xfer.total_ticks, 2);
+        assert_eq!(xfer.remaining_ticks, 2);
+        assert!(!xfer.arrived);
+        assert_eq!(jump_transfer_location(&xfer), a);
+        assert!(!spend_jump_transfer(&mut xfer, 1));
+        assert_eq!(xfer.remaining_ticks, 1);
+        assert_eq!(xfer.ticks_spent(), 1);
+        assert_eq!(jump_transfer_location(&xfer), b);
+        assert!(spend_jump_transfer(&mut xfer, 1));
+        assert!(xfer.arrived);
+        assert_eq!(xfer.remaining_ticks, 0);
+        assert_eq!(jump_transfer_location(&xfer), c);
+        assert!(spend_jump_transfer(&mut xfer, 5), "already arrived stays arrived");
+
+        let mut coarse = begin_jump_transfer(&w, a, c).unwrap();
+        assert!(spend_jump_transfer(&mut coarse, 10), "coarse dt still arrives once");
+        assert_eq!(coarse.remaining_ticks, 0);
+        assert_eq!(jump_transfer_location(&coarse), c);
+
+        let here = begin_jump_transfer(&w, a, a).unwrap();
+        assert!(here.arrived);
+        assert_eq!(here.remaining_ticks, 0);
     }
 
 }
