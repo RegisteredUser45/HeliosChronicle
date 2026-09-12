@@ -508,6 +508,21 @@ impl<'a> Operator<'a> {
     }
 
 
+
+    /// Unload cargo from a ship.
+    pub fn unload_ship_cargo(
+        &mut self,
+        ship_id: EntityId,
+        qty: f64,
+    ) -> Result<f64, OperatorError> {
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        crate::hulls::unload_cargo(ship, qty).map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Load cargo onto a ship up to design capacity.
     pub fn load_ship_cargo(
         &mut self,
