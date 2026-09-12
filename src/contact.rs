@@ -483,6 +483,45 @@ pub fn default_contract(world: &mut World, contract_id: EntityId) -> bool {
 /// Record / refresh a fleet last-known fix in observer fog (G knowledge state).
 
 /// Lose fleet contact: drop observer's last-known fleet fog entry (sensor/intel gap).
+
+/// Diplomatic fleet-fog share: copy `from`'s last-known fleet entry to `to`.
+///
+/// Fails closed if `from` has no entry for `fleet`. Merges by keeping the lower
+/// uncertainty and newer last_known_tick.
+pub fn share_fleet_fog(
+    world: &mut World,
+    from: EmpireId,
+    to: EmpireId,
+    fleet: EntityId,
+) -> bool {
+    let Some(src) = world
+        .contact
+        .get(from)
+        .and_then(|c| c.fog.known_fleets.get(&fleet))
+        .cloned()
+    else {
+        return false;
+    };
+    let tick = world.master_tick();
+    let entry = world
+        .contact
+        .ensure(to)
+        .fog
+        .known_fleets
+        .entry(fleet)
+        .or_insert_with(|| FleetFogEntry::fresh(tick, src.last_system));
+    entry.last_known_tick = entry.last_known_tick.max(src.last_known_tick).max(tick);
+    entry.uncertainty = entry.uncertainty.min(src.uncertainty);
+    if src.last_system.is_some() {
+        entry.last_system = src.last_system;
+    }
+    if let Some(sys) = entry.last_system {
+        push_fine_hot(world, sys);
+    }
+    world.recompute_outcome_hash();
+    true
+}
+
 pub fn lose_fleet_contact(world: &mut World, observer: EmpireId, fleet: EntityId) -> bool {
     let Some(contact) = world.contact.empires.get_mut(&observer) else {
         return false;
@@ -921,6 +960,22 @@ mod tests {
         assert!(lose_fleet_contact(&mut w, e, fleet));
         assert!(!w.contact.get(e).unwrap().fog.known_fleets.contains_key(&fleet));
         assert!(!lose_fleet_contact(&mut w, e, fleet));
+    }
+
+
+    #[test]
+    fn share_fleet_fog_copies_entry() {
+        let mut w = World::new(170);
+        let a = EmpireId(1);
+        let b = EmpireId(2);
+        let fleet = EntityId(88);
+        let system = *w.ledger().systems().next().unwrap().0;
+        assert!(!share_fleet_fog(&mut w, a, b, fleet));
+        sense_fleet(&mut w, a, fleet, Some(system));
+        assert!(share_fleet_fog(&mut w, a, b, fleet));
+        let fog_b = &w.contact.get(b).unwrap().fog.known_fleets[&fleet];
+        assert_eq!(fog_b.last_system, Some(system));
+        assert!(fog_b.uncertainty < 1.0);
     }
 
 }
