@@ -6,7 +6,8 @@ use eframe::egui::{self, Color32, RichText, ScrollArea};
 
 use crate::entity::EntityId;
 use crate::event::EventKind;
-use crate::hulls::{self, ShipInstance};
+use crate::hulls::{self};
+use crate::research::{self, TechLine, TechSegment};
 use crate::sky;
 use crate::world::World;
 
@@ -37,6 +38,17 @@ pub struct HeliosApp {
     open_ships: BTreeSet<EntityId>,
     /// Fleet list window (ShipInstance roster; no TaskGroup type yet).
     fleet_open: bool,
+    /// Research inspector (labs / tech lines / unlocks).
+    research_open: bool,
+    /// Selected lab in Research inspector detail pane.
+    research_lab: Option<EntityId>,
+    /// Design inspector (world.ship_designs roster + detail).
+    designs_open: bool,
+    /// Selected design in Design inspector detail pane.
+    selected_design: Option<EntityId>,
+    /// Cached stub tech book — avoid per-frame TechLine/TechSegment rebuild clones.
+    tech_lines: Vec<TechLine>,
+    tech_segments: Vec<TechSegment>,
 }
 
 impl HeliosApp {
@@ -63,6 +75,7 @@ impl HeliosApp {
             let span = ((max_x - min_x).max(max_y - min_y)).max(80.0_f32);
             cam.zoom = (420.0_f32 / span).clamp(0.2, 4.0);
         }
+        let (tech_lines, tech_segments) = research::stub_tech_book();
         Self {
             world,
             paused: true,
@@ -75,6 +88,12 @@ impl HeliosApp {
             open_bodies: BTreeSet::new(),
             open_ships: BTreeSet::new(),
             fleet_open: false,
+            research_open: false,
+            research_lab: None,
+            designs_open: false,
+            selected_design: None,
+            tech_lines,
+            tech_segments,
         }
     }
 
@@ -216,6 +235,15 @@ impl HeliosApp {
                     if ui.button("Open Fleet list…").clicked() {
                         open_fleet = true;
                     }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Research…").clicked() {
+                            self.research_open = true;
+                        }
+                        if ui.button("Designs…").clicked() {
+                            self.designs_open = true;
+                        }
+                    });
                 } else {
                     ui.label("Select a system on the map.");
                 }
@@ -396,26 +424,12 @@ impl HeliosApp {
     fn show_ship_inspectors(&mut self, ctx: &egui::Context) {
         let ids: Vec<EntityId> = self.open_ships.iter().copied().collect();
         let mut closed: Vec<EntityId> = Vec::new();
+        let mut open_design: Option<EntityId> = None;
         for sid in ids {
             let mut open = true;
             let title = format!("Ship inspector — {sid}");
-            // Snapshot ship + design name for display without awkward borrows.
-            let ship: Option<ShipInstance> = self.world.ships.get(&sid).cloned();
-            let design_name = ship.as_ref().and_then(|s| {
-                self.world
-                    .ship_designs
-                    .get(&s.design_id)
-                    .map(|d| d.name.clone())
-            });
-            let design = ship
-                .as_ref()
-                .and_then(|s| self.world.ship_designs.get(&s.design_id).cloned());
-            let cap = design.as_ref().map(hulls::cargo_capacity).unwrap_or(0.0);
-            let can_mv = match (&design, &ship) {
-                (Some(d), Some(s)) => hulls::can_move(d, s),
-                _ => false,
-            };
-
+            // Display from live refs / scalars — no per-frame ShipInstance/ShipDesign clones.
+            let world = &self.world;
             egui::Window::new(title)
                 .id(egui::Id::new(("helios_ship", sid.0)))
                 .open(&mut open)
@@ -425,8 +439,11 @@ impl HeliosApp {
                         RichText::new(format!("breadcrumb: System → Ship {sid}")).weak(),
                     );
                     ui.separator();
-                    match &ship {
+                    match world.ships.get(&sid) {
                         Some(s) => {
+                            let design = world.ship_designs.get(&s.design_id);
+                            let cap = design.map(hulls::cargo_capacity).unwrap_or(0.0);
+                            let can_mv = design.map(|d| hulls::can_move(d, s)).unwrap_or(false);
                             egui::Grid::new(("ship_grid", sid.0))
                                 .num_columns(2)
                                 .striped(true)
@@ -436,8 +453,7 @@ impl HeliosApp {
                                     ui.end_row();
                                     ui.label("system location");
                                     ui.monospace(
-                                        "(none on ShipInstance — location not tracked yet)"
-                                            .to_string(),
+                                        "(none on ShipInstance — location not tracked yet)",
                                     );
                                     ui.end_row();
                                     ui.label("design_id");
@@ -445,11 +461,11 @@ impl HeliosApp {
                                     ui.end_row();
                                     ui.label("design name");
                                     ui.monospace(
-                                        design_name.clone().unwrap_or_else(|| "(missing)".into()),
+                                        design.map(|d| d.name.as_str()).unwrap_or("(missing)"),
                                     );
                                     ui.end_row();
                                     ui.label("fuel_tier");
-                                    ui.monospace(s.fuel_tier.clone());
+                                    ui.monospace(s.fuel_tier.as_str());
                                     ui.end_row();
                                     ui.label("fuel_qty");
                                     ui.monospace(format!("{:.6}", s.fuel_qty));
@@ -488,7 +504,7 @@ impl HeliosApp {
                                     ui.monospace(format!("{ammo}: {qty:.3}"));
                                 }
                             }
-                            if let Some(d) = &design {
+                            if let Some(d) = design {
                                 ui.separator();
                                 ui.label(RichText::new("design modules").strong());
                                 ui.monospace(format!(
@@ -497,6 +513,9 @@ impl HeliosApp {
                                 ));
                                 for m in &d.modules {
                                     ui.monospace(format!("  {m}"));
+                                }
+                                if ui.button("Open Design inspector…").clicked() {
+                                    open_design = Some(s.design_id);
                                 }
                             }
                         }
@@ -511,6 +530,312 @@ impl HeliosApp {
         }
         for id in closed {
             self.open_ships.remove(&id);
+        }
+        if let Some(did) = open_design {
+            self.selected_design = Some(did);
+            self.designs_open = true;
+        }
+    }
+
+    fn show_research_inspector(&mut self, ctx: &egui::Context) {
+        if !self.research_open {
+            return;
+        }
+        let mut open = true;
+        let mut pick_lab: Option<EntityId> = None;
+        let mut open_designs = false;
+        let rp_cost = research::segment_rp_cost(self.world.globals());
+        let lab_ids: Vec<EntityId> = self.world.labs.keys().copied().collect();
+
+        egui::Window::new("Research inspector")
+            .id(egui::Id::new("helios_research_inspector"))
+            .open(&mut open)
+            .default_width(520.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                ui.label(RichText::new("breadcrumb: Catalog/Research").weak());
+                ui.label(format!(
+                    "world.labs = {}   tech lines = {}   segments = {}   rp_cost/seg = {:.1}",
+                    lab_ids.len(),
+                    self.tech_lines.len(),
+                    self.tech_segments.len(),
+                    rp_cost
+                ));
+                if ui.button("Open Designs…").clicked() {
+                    open_designs = true;
+                }
+                ui.separator();
+
+                ui.label(RichText::new("Labs (roster)").strong());
+                ScrollArea::vertical()
+                    .id_source("research_lab_roster")
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        if lab_ids.is_empty() {
+                            ui.label("(no labs — spawn via operator research)");
+                        } else {
+                            for lid in &lab_ids {
+                                // Live Lab ref — no Lab clone.
+                                let Some(lab) = self.world.labs.get(lid) else {
+                                    continue;
+                                };
+                                let assigned = lab
+                                    .assigned_segment
+                                    .as_deref()
+                                    .unwrap_or("(idle)");
+                                ui.horizontal(|ui| {
+                                    ui.monospace(format!(
+                                        "lab {lid}  empire={}  cap={:.1}  prog={:.1}  site={:?}  queue={assigned}",
+                                        lab.empire_id, lab.capacity, lab.progress_rp, lab.site_system
+                                    ));
+                                    if ui.button("Detail").clicked() {
+                                        pick_lab = Some(*lid);
+                                    }
+                                });
+                            }
+                        }
+                    });
+
+                ui.separator();
+                ui.label(RichText::new("Lab detail").strong());
+                match self.research_lab {
+                    Some(lid) => match self.world.labs.get(&lid) {
+                        Some(lab) => {
+                            ui.label(
+                                RichText::new(format!(
+                                    "breadcrumb: Catalog/Research → Lab {lid}"
+                                ))
+                                .weak(),
+                            );
+                            egui::Grid::new(("lab_grid", lid.0))
+                                .num_columns(2)
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    ui.label("id");
+                                    ui.monospace(lab.id.to_string());
+                                    ui.end_row();
+                                    ui.label("empire_id");
+                                    ui.monospace(lab.empire_id.to_string());
+                                    ui.end_row();
+                                    ui.label("capacity");
+                                    ui.monospace(format!("{:.6}", lab.capacity));
+                                    ui.end_row();
+                                    ui.label("progress_rp");
+                                    ui.monospace(format!("{:.6}", lab.progress_rp));
+                                    ui.end_row();
+                                    ui.label("assigned_segment");
+                                    ui.monospace(
+                                        lab.assigned_segment
+                                            .as_deref()
+                                            .unwrap_or("(none)"),
+                                    );
+                                    ui.end_row();
+                                    ui.label("site_system");
+                                    ui.monospace(format!("{:?}", lab.site_system));
+                                    ui.end_row();
+                                    ui.label("rp remaining (est)");
+                                    let rem = (rp_cost - lab.progress_rp).max(0.0);
+                                    ui.monospace(format!("{rem:.6} / cost {rp_cost:.1}"));
+                                    ui.end_row();
+                                });
+                            if let Some(seg_id) = lab.assigned_segment.as_deref() {
+                                if let Some(seg) =
+                                    self.tech_segments.iter().find(|s| s.id == seg_id)
+                                {
+                                    ui.label(RichText::new("queued segment (catalog)").strong());
+                                    ui.monospace(format!(
+                                        "{} — {} (line {} idx {})",
+                                        seg.id, seg.display_name, seg.line_id, seg.index
+                                    ));
+                                    ui.monospace(format!("gates: {:?}", seg.material_gates));
+                                    ui.monospace(format!("unlocks: {:?}", seg.unlocks));
+                                }
+                            }
+                            // Empire unlocks for this lab's empire (live ledger refs).
+                            if let Some(emp) = self.world.ledger().get_empire(lab.empire_id) {
+                                ui.separator();
+                                ui.label(RichText::new("empire unlocks").strong());
+                                ui.monospace(format!(
+                                    "unlocked_segments ({})",
+                                    emp.unlocked_segments.len()
+                                ));
+                                for s in emp.unlocked_segments.iter().take(32) {
+                                    ui.monospace(format!("  {s}"));
+                                }
+                                if emp.unlocked_segments.len() > 32 {
+                                    ui.label(format!(
+                                        "… +{} more",
+                                        emp.unlocked_segments.len() - 32
+                                    ));
+                                }
+                                ui.monospace(format!(
+                                    "unlocked_catalog_ids ({})",
+                                    emp.unlocked_catalog_ids.len()
+                                ));
+                                for c in emp.unlocked_catalog_ids.iter().take(32) {
+                                    ui.monospace(format!("  {c}"));
+                                }
+                                if emp.unlocked_catalog_ids.len() > 32 {
+                                    ui.label(format!(
+                                        "… +{} more",
+                                        emp.unlocked_catalog_ids.len() - 32
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            ui.label("Lab not found in world.labs.");
+                        }
+                    },
+                    None => {
+                        ui.label("(select a lab from the roster)");
+                    }
+                }
+
+                ui.separator();
+                ui.label(RichText::new("Tech lines / segments (cached catalog)").strong());
+                ScrollArea::vertical()
+                    .id_source("research_tech_book")
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for line in &self.tech_lines {
+                            ui.label(RichText::new(format!(
+                                "{} — {} ({:?})",
+                                line.id, line.name, line.category
+                            )).strong());
+                            for sid in &line.segment_ids {
+                                if let Some(seg) =
+                                    self.tech_segments.iter().find(|s| s.id == *sid)
+                                {
+                                    ui.monospace(format!(
+                                        "  [{}] {}  {}",
+                                        seg.index, seg.id, seg.display_name
+                                    ));
+                                } else {
+                                    ui.monospace(format!("  {sid}"));
+                                }
+                            }
+                        }
+                    });
+            });
+
+        if let Some(lid) = pick_lab {
+            self.research_lab = Some(lid);
+        }
+        if open_designs {
+            self.designs_open = true;
+        }
+        if !open {
+            self.research_open = false;
+        }
+    }
+
+    fn show_design_inspector(&mut self, ctx: &egui::Context) {
+        if !self.designs_open {
+            return;
+        }
+        let mut open = true;
+        let mut pick: Option<EntityId> = None;
+        let design_ids: Vec<EntityId> = self.world.ship_designs.keys().copied().collect();
+
+        egui::Window::new("Design inspector")
+            .id(egui::Id::new("helios_design_inspector"))
+            .open(&mut open)
+            .default_width(480.0)
+            .default_height(360.0)
+            .show(ctx, |ui| {
+                ui.label(RichText::new("breadcrumb: Catalog/Designs").weak());
+                ui.label(format!("world.ship_designs = {}", design_ids.len()));
+                ui.separator();
+                ui.label(RichText::new("Designs (roster)").strong());
+                ScrollArea::vertical()
+                    .id_source("design_roster")
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        if design_ids.is_empty() {
+                            ui.label("(no designs — register via hulls / operator)");
+                        } else {
+                            for did in &design_ids {
+                                // Live ShipDesign ref — no clone.
+                                let Some(d) = self.world.ship_designs.get(did) else {
+                                    continue;
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.monospace(format!(
+                                        "design {did}  {}  fuel={}  crew={:.1}  mass={:.1}  mods={}",
+                                        d.name,
+                                        d.fuel_tier,
+                                        d.crew_req,
+                                        d.mass,
+                                        d.modules.len()
+                                    ));
+                                    if ui.button("Detail").clicked() {
+                                        pick = Some(*did);
+                                    }
+                                });
+                            }
+                        }
+                    });
+
+                ui.separator();
+                ui.label(RichText::new("Design detail").strong());
+                match self.selected_design {
+                    Some(did) => match self.world.ship_designs.get(&did) {
+                        Some(d) => {
+                            ui.label(
+                                RichText::new(format!(
+                                    "breadcrumb: Catalog/Designs → {did}"
+                                ))
+                                .weak(),
+                            );
+                            egui::Grid::new(("design_grid", did.0))
+                                .num_columns(2)
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    ui.label("id");
+                                    ui.monospace(d.id.to_string());
+                                    ui.end_row();
+                                    ui.label("name");
+                                    ui.monospace(d.name.as_str());
+                                    ui.end_row();
+                                    ui.label("fuel_tier");
+                                    ui.monospace(d.fuel_tier.as_str());
+                                    ui.end_row();
+                                    ui.label("crew_req");
+                                    ui.monospace(format!("{:.6}", d.crew_req));
+                                    ui.end_row();
+                                    ui.label("mass");
+                                    ui.monospace(format!("{:.6}", d.mass));
+                                    ui.end_row();
+                                    ui.label("cargo_capacity");
+                                    ui.monospace(format!("{:.6}", hulls::cargo_capacity(d)));
+                                    ui.end_row();
+                                });
+                            ui.separator();
+                            ui.label(RichText::new("modules").strong());
+                            if d.modules.is_empty() {
+                                ui.label("(none)");
+                            } else {
+                                for m in &d.modules {
+                                    ui.monospace(format!("  {m}"));
+                                }
+                            }
+                        }
+                        None => {
+                            ui.label("Design not found in world.ship_designs.");
+                        }
+                    },
+                    None => {
+                        ui.label("(select a design from the roster)");
+                    }
+                }
+            });
+
+        if let Some(did) = pick {
+            self.selected_design = Some(did);
+        }
+        if !open {
+            self.designs_open = false;
         }
     }
 }
@@ -599,6 +924,12 @@ impl eframe::App for HeliosApp {
                 if ui.button("Fleet").clicked() {
                     self.fleet_open = true;
                 }
+                if ui.button("Research").clicked() {
+                    self.research_open = true;
+                }
+                if ui.button("Designs").clicked() {
+                    self.designs_open = true;
+                }
             });
         });
 
@@ -637,6 +968,8 @@ impl eframe::App for HeliosApp {
         self.show_fleet_list(ctx);
         self.show_body_inspectors(ctx);
         self.show_ship_inspectors(ctx);
+        self.show_research_inspector(ctx);
+        self.show_design_inspector(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label("Map (pan: drag · zoom: scroll · click: inspect)");
