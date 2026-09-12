@@ -1,4 +1,4 @@
-//! Thin headless CLI for Helios Chronicle Phase A.
+//! Thin CLI for Helios Chronicle — headless run/verify + Phase U operator shell.
 
 use std::path::PathBuf;
 
@@ -8,7 +8,7 @@ use helios_chronicle::{
 };
 
 #[derive(Parser, Debug)]
-#[command(name = "helios", about = "Helios Chronicle — headless Phase A kernel")]
+#[command(name = "helios", about = "Helios Chronicle — headless kernel + operator shell")]
 struct Cli {
     #[command(subcommand)]
     cmd: Commands,
@@ -46,6 +46,12 @@ enum Commands {
         seed: u64,
         #[arg(short = 'n', long, default_value_t = 50)]
         ticks: u64,
+    },
+    /// Phase U: open the operator shell (map + time + EventLog strip + inspector).
+    Ui {
+        /// World seed (same seed ⇒ same ledger).
+        #[arg(short, long, default_value_t = 42)]
+        seed: u64,
     },
 }
 
@@ -134,6 +140,22 @@ fn main() {
                 "verify seed={seed} ticks={ticks}: match={ok} hash_a={ha:#x} hash_b={hb:#x}"
             );
             if !ok {
+                std::process::exit(1);
+            }
+        }
+        Commands::Ui { seed } => {
+            #[cfg(feature = "ui")]
+            {
+                println!("opening operator shell seed={seed}");
+                if let Err(e) = helios_chronicle::ui::run(seed) {
+                    eprintln!("ui failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+            #[cfg(not(feature = "ui"))]
+            {
+                let _ = seed;
+                eprintln!("helios ui requires the `ui` feature (default)");
                 std::process::exit(1);
             }
         }
