@@ -172,6 +172,10 @@ pub enum EventKind {
         ship: EntityId,
         qty: f64,
     },
+    CargoLoaded {
+        ship: EntityId,
+        qty: f64,
+    },
     ShipBuilt { empire: EntityId, ship: EntityId, design: EntityId },
 }
 
@@ -209,6 +213,9 @@ pub fn event_one_line(kind: &EventKind) -> String {
         }
         EventKind::CargoJettisoned { ship, qty } => {
             format!("jettisoned {qty} cargo ship={ship}")
+        }
+        EventKind::CargoLoaded { ship, qty } => {
+            format!("loaded {qty} cargo ship={ship}")
         }
         EventKind::OperatorMutation { entity, field, .. } => {
             format!("operator {field} entity={entity}")

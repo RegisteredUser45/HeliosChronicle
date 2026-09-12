@@ -606,12 +606,30 @@ impl<'a> Operator<'a> {
             .get(&design_id)
             .ok_or(OperatorError::NotFound(design_id))?
             .clone();
+        let before = self
+            .world
+            .ships
+            .get(&ship_id)
+            .map(|s| s.cargo_qty)
+            .unwrap_or(0.0);
         let ship = self
             .world
             .ships
             .get_mut(&ship_id)
             .ok_or(OperatorError::NotFound(ship_id))?;
-        crate::hulls::load_cargo(&design, ship, qty).map_err(|e| OperatorError::Other(e.to_string()))
+        let total = crate::hulls::load_cargo(&design, ship, qty).map_err(|e| OperatorError::Other(e.to_string()))?;
+        let added = (total - before).max(0.0);
+        if added > 0.0 {
+            let tick = self.world.master_tick();
+            self.world.log_mut().append(
+                tick,
+                EventKind::CargoLoaded {
+                    ship: ship_id,
+                    qty: added,
+                },
+            );
+        }
+        Ok(total)
     }
 
     /// Cargo capacity from design cargo_hold modules.
