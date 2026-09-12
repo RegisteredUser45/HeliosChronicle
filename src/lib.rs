@@ -30,7 +30,7 @@ pub mod ui;
 
 pub use contact::{
     break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, share_fog, has_clause, mark_system_surveyed, decay_fleet_fog, decay_system_fog, fulfill_survey_charter, fulfill_salvage_rights, open_passage_allows, has_active_contract, push_fine_hot,
-    sense_fleet, sign_contract, sign_treaty, upgrade_fog, Contract, ContractKind, EmpireContact,
+    sense_fleet, lose_fleet_contact, sign_contract, sign_treaty, upgrade_fog, Contract, ContractKind, EmpireContact,
     EmpireContactStore, FleetFogEntry, FogState, SystemFogEntry, Treaty, TreatyClause,
 };
 pub use entity::{

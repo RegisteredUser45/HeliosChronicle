@@ -481,6 +481,19 @@ pub fn default_contract(world: &mut World, contract_id: EntityId) -> bool {
 
 
 /// Record / refresh a fleet last-known fix in observer fog (G knowledge state).
+
+/// Lose fleet contact: drop observer's last-known fleet fog entry (sensor/intel gap).
+pub fn lose_fleet_contact(world: &mut World, observer: EmpireId, fleet: EntityId) -> bool {
+    let Some(contact) = world.contact.empires.get_mut(&observer) else {
+        return false;
+    };
+    let removed = contact.fog.known_fleets.remove(&fleet).is_some();
+    if removed {
+        world.recompute_outcome_hash();
+    }
+    removed
+}
+
 pub fn sense_fleet(
     world: &mut World,
     observer: EmpireId,
@@ -895,6 +908,19 @@ mod tests {
         let fog_b = &w.contact.get(b).unwrap().fog.known_systems[&system];
         assert!(fog_b.surveyed_fuse);
         assert!(fog_b.uncertainty <= 0.25);
+    }
+
+
+    #[test]
+    fn lose_fleet_contact_drops_entry() {
+        let mut w = World::new(160);
+        let e = EmpireId(3);
+        let fleet = EntityId(77);
+        sense_fleet(&mut w, e, fleet, None);
+        assert!(w.contact.get(e).unwrap().fog.known_fleets.contains_key(&fleet));
+        assert!(lose_fleet_contact(&mut w, e, fleet));
+        assert!(!w.contact.get(e).unwrap().fog.known_fleets.contains_key(&fleet));
+        assert!(!lose_fleet_contact(&mut w, e, fleet));
     }
 
 }
