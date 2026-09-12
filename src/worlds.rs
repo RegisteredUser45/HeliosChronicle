@@ -86,6 +86,7 @@ pub enum WorldsError {
     FacilityNotBodyScoped(String),
     NoBomRecipe(String),
     RecipeFailed(String),
+    ReaggregateFailed,
 }
 
 impl std::fmt::Display for WorldsError {
@@ -98,6 +99,7 @@ impl std::fmt::Display for WorldsError {
             Self::FacilityNotBodyScoped(id) => write!(f, "facility not body-scoped {id}"),
             Self::NoBomRecipe(id) => write!(f, "facility has no bom_recipe {id}"),
             Self::RecipeFailed(id) => write!(f, "recipe failed {id}"),
+            Self::ReaggregateFailed => write!(f, "binding reaggregate failed"),
         }
     }
 }
@@ -204,6 +206,28 @@ pub fn life_support_bill(body: &BodyEntity, envelope: &SpeciesEnvelope, dt: u64)
 
 /// Apply life-support by consuming `stock.organics` + `stock.volatiles` at the body's system.
 /// Shortfall adds mortality-style pop loss (no separate supply.* in catalog v4).
+/// Lock 8: after D drains binding stocks from deposits, reaggregate C7 remainder + dry check.
+pub fn reaggregate_after_life_support_drain(
+    world: &mut crate::world::World,
+    system: crate::entity::EntityId,
+) -> Result<f64, WorldsError> {
+    crate::matter::reaggregate_and_check(world, system).map_err(|_| WorldsError::ReaggregateFailed)
+}
+
+/// Consume stock then reaggregate when any deposit quantity was taken (Lock 8 binding drain).
+pub fn consume_stock_at_system(
+    world: &mut crate::world::World,
+    system: crate::entity::EntityId,
+    stock: &str,
+    need: f64,
+) -> Result<f64, WorldsError> {
+    let (got, from_deposits) = consume_stock_at_system_raw(world, system, stock, need);
+    if from_deposits > 1e-12 {
+        reaggregate_after_life_support_drain(world, system)?;
+    }
+    Ok(got)
+}
+
 pub fn apply_life_support_drain(
     world: &mut crate::world::World,
     body_id: crate::entity::EntityId,
@@ -220,14 +244,19 @@ pub fn apply_life_support_drain(
         (body.system, body.pops, bill)
     };
     let (need_org, need_vol) = bill;
-    // Consume from deposits/salvage via try_run style peek+consume helpers inline
     let mut shortfall = 0.0;
+    let mut drained_deposits = 0.0;
     for (stock, need) in [("stock.organics", need_org), ("stock.volatiles", need_vol)] {
         if need <= 0.0 {
             continue;
         }
-        let got = consume_stock_at_system(world, system, stock, need);
+        let (got, from_dep) = consume_stock_at_system_raw(world, system, stock, need);
+        drained_deposits += from_dep;
         shortfall += (need - got).max(0.0);
+    }
+    // One Lock-8 reaggregate after binding organics/volatiles deposit drains.
+    if drained_deposits > 1e-12 {
+        let _ = reaggregate_after_life_support_drain(world, system);
     }
     if shortfall > 0.0 {
         if let Some(body) = world.ledger.get_body_mut(body_id) {
@@ -240,17 +269,18 @@ pub fn apply_life_support_drain(
     0.0
 }
 
-fn consume_stock_at_system(
+/// Returns `(total_got, amount_taken_from_deposits)`.
+fn consume_stock_at_system_raw(
     world: &mut crate::world::World,
     system: crate::entity::EntityId,
     stock: &str,
     need: f64,
-) -> f64 {
+) -> (f64, f64) {
     let Some(sys) = world.ledger.get_mut(system) else {
-        return 0.0;
+        return (0.0, 0.0);
     };
     let mut left = need;
-    let mut got = 0.0;
+    let mut from_deposits = 0.0;
     for d in sys.deposits.iter_mut() {
         if left <= 1e-12 {
             break;
@@ -261,9 +291,10 @@ fn consume_stock_at_system(
         let take = d.quantity.min(left).max(0.0);
         d.quantity -= take;
         left -= take;
-        got += take;
+        from_deposits += take;
     }
     sys.deposits.retain(|d| d.quantity > 1e-12);
+    let mut got = from_deposits;
     if left > 1e-12 {
         let have = sys.salvage_by_stock.get(stock).copied().unwrap_or(0.0);
         let take = have.min(left).max(0.0);
@@ -276,7 +307,7 @@ fn consume_stock_at_system(
             got += take;
         }
     }
-    got
+    (got, from_deposits)
 }
 
 pub fn apply_pop_deficits(body: &mut BodyEntity, envelope: &SpeciesEnvelope, dt: u64) -> f64 {
@@ -379,6 +410,39 @@ mod tests {
         let after_org: f64 = w.ledger.get(system).unwrap().deposits.iter().filter(|d| d.stock_id == "stock.organics").map(|d| d.quantity).sum();
         assert!(after_org < before_org);
         assert!(w.ledger.get_body(body_id).unwrap().pops > 0.0);
+    }
+
+    #[test]
+    fn life_support_drain_reaggregates_binding_remainder() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::world::World;
+        let mut w = World::new(32);
+        let system = *w.ledger.systems().next().unwrap().0;
+        let body_id = w.ledger.spawn_body(system);
+        {
+            let b = w.ledger.get_body_mut(body_id).unwrap();
+            b.pops = 50.0;
+        }
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.organics", 100.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.volatiles", 100.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        let before_rem = w.ledger.get(system).unwrap().binding_remainder;
+        assert!(before_rem > 0.0, "binding remainder should include organics/volatiles");
+        apply_life_support_drain(&mut w, body_id, 10);
+        let after_rem = w.ledger.get(system).unwrap().binding_remainder;
+        assert!(
+            after_rem < before_rem - 1e-9,
+            "Lock 8: remainder must reaggregate after life-support drain; before={before_rem} after={after_rem}"
+        );
     }
 
     #[test]
