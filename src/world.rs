@@ -218,7 +218,6 @@ impl World {
         // systems; under fine, process everyone. Fuse uses absolute end ticks.
         let lod = self.lod;
         let mut fuse_ends: Vec<EntityId> = Vec::new();
-        let mut fuse_ticks: Vec<(EntityId, u64)> = Vec::new();
         let mut deplete_checks: Vec<EntityId> = Vec::new();
 
         for (_, sys) in self.ledger.systems_mut() {
@@ -237,9 +236,9 @@ impl World {
                     fuse_ends.push(sys.id);
                 } else if let Some(end) = sys.fuse_end_tick {
                     if to < end {
-                        let rem = end - to;
-                        sys.fuse_remaining = Some(rem);
-                        fuse_ticks.push((sys.id, rem));
+                        // Sync remaining for operator views; do not chronicle FuseTick
+                        // every step (Issue 11 — notable moments only; FuseArmed/End stay).
+                        sys.fuse_remaining = Some(end - to);
                     }
                 }
             } else {
@@ -250,15 +249,8 @@ impl World {
 
         self.master_tick = to;
 
-        for (id, rem) in fuse_ticks {
-            self.log.append(
-                to,
-                EventKind::FuseTick {
-                    system: id,
-                    remaining: rem,
-                },
-            );
-        }
+        // Issue 11 / lean: do not append FuseTick or TickAdvanced (tick spam).
+        // EventKind variants remain for serde + old saves; FuseEnd stays notable.
         for id in fuse_ends {
             sky::apply_fuse_end(self, id);
             self.log.append(to, EventKind::FuseEnd { system: id });
@@ -269,16 +261,6 @@ impl World {
         }
 
         sky::maintain_live_band(self);
-
-        self.log.append(
-            to,
-            EventKind::TickAdvanced {
-                from,
-                to,
-                dt,
-                lod: format!("{:?}", lod),
-            },
-        );
         // Phase E: advance labs (segment RP; completions emit SegmentResearched).
         crate::research::tick_all_labs(self, dt);
 

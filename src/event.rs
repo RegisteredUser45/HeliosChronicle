@@ -235,8 +235,8 @@ fn default_max_events() -> usize {
 /// Append-only event log with an optional soft retention cap (Lock 10).
 ///
 /// Sequence numbers stay monotonic forever; when over cap, oldest retained
-/// events are dropped so fine-tick FuseTick/TickAdvanced spam cannot blow
-/// memory on long headless runs.
+/// events are dropped. TickAdvanced/FuseTick variants remain for serde, but
+/// the tick path no longer appends them (Issue 11 notable-first chronicle).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventLog {
     next_seq: u64,

@@ -97,11 +97,17 @@ mod tests {
         assert_eq!(w.master_tick(), 0);
         w.tick(5);
         assert_eq!(w.master_tick(), 5);
-        assert!(w
+        // Issue 11 lean: ticks must not spam TickAdvanced into the chronicle.
+        assert!(!w
             .log()
             .events()
             .iter()
             .any(|e| matches!(e.kind, EventKind::TickAdvanced { .. })));
+        assert!(!w
+            .log()
+            .events()
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::FuseTick { .. })));
     }
 
     #[test]
@@ -119,7 +125,10 @@ mod tests {
     fn event_log_is_append_only() {
         let mut w = World::new(7);
         let before = w.log().len();
+        // Idle ticks no longer append (Issue 11); notable paths still do.
         w.tick(3);
+        assert_eq!(w.log().len(), before);
+        w.set_lod(crate::lod::LodMode::Coarse);
         assert!(w.log().len() > before);
         let seqs: Vec<_> = w.log().events().iter().map(|e| e.seq).collect();
         let mut sorted = seqs.clone();
