@@ -692,6 +692,28 @@ impl<'a> Operator<'a> {
         crate::hulls::load_magazine(ship, ammo_id, qty).map_err(|e| OperatorError::Other(e.to_string()))
     }
 
+    /// Apply ship maintenance drain over `dt`.
+    pub fn maintain_ship(
+        &mut self,
+        ship_id: EntityId,
+        dt: u64,
+    ) -> Result<f64, OperatorError> {
+        crate::hulls::apply_ship_maintenance_on_world(self.world, ship_id, dt)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
+    /// Restock ship magazine from system outputs_stock.
+    pub fn restock_ship_magazine(
+        &mut self,
+        ship_id: EntityId,
+        system: EntityId,
+        ammo_id: &str,
+        qty: f64,
+    ) -> Result<f64, OperatorError> {
+        crate::hulls::restock_magazine_from_system(self.world, ship_id, system, ammo_id, qty)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Refine ship fuel by its design tier recipe.
     pub fn refine_ship_tier_fuel(
         &mut self,

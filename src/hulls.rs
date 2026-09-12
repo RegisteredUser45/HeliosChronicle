@@ -615,6 +615,82 @@ pub fn load_magazine(ship: &mut ShipInstance, ammo_id: &str, qty: f64) -> Result
     Ok(*e)
 }
 
+/// Stub maintenance drain per tick: 0.01 per module on the design.
+pub fn maintenance_burn_rate(design: &ShipDesign) -> f64 {
+    0.01 * design.modules.len() as f64
+}
+
+/// Drain ship maintenance over `dt`; low maintenance accrues hull damage.
+pub fn apply_ship_maintenance(ship: &mut ShipInstance, design: &ShipDesign, dt: u64) -> f64 {
+    let burn = maintenance_burn_rate(design) * dt as f64;
+    ship.maintenance = (ship.maintenance - burn).clamp(0.0, 1.0);
+    if ship.maintenance < 0.25 {
+        apply_ship_damage(ship, 0.01 * dt as f64);
+    }
+    ship.maintenance
+}
+
+/// World-level maintenance tick without cloning [`ShipDesign`].
+pub fn apply_ship_maintenance_on_world(
+    world: &mut World,
+    ship_id: EntityId,
+    dt: u64,
+) -> Result<f64, HullError> {
+    let design_id = world
+        .ships
+        .get(&ship_id)
+        .ok_or(HullError::ShipNotFound)?
+        .design_id;
+    let burn_rate = {
+        let d = world
+            .ship_designs
+            .get(&design_id)
+            .ok_or(HullError::DesignNotFound)?;
+        maintenance_burn_rate(d)
+    };
+    let ship = world.ships.get_mut(&ship_id).ok_or(HullError::ShipNotFound)?;
+    ship.maintenance = (ship.maintenance - burn_rate * dt as f64).clamp(0.0, 1.0);
+    if ship.maintenance < 0.25 {
+        apply_ship_damage(ship, 0.01 * dt as f64);
+    }
+    Ok(ship.maintenance)
+}
+
+/// Draw `ammo_id` from a system's `outputs_stock` into the ship magazine.
+pub fn restock_magazine_from_system(
+    world: &mut World,
+    ship_id: EntityId,
+    system: EntityId,
+    ammo_id: &str,
+    qty: f64,
+) -> Result<f64, HullError> {
+    if ammo_id.is_empty() {
+        return Err(HullError::UnknownAmmo(ammo_id.into()));
+    }
+    if !qty.is_finite() || qty <= 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    if !world.ships.contains_key(&ship_id) {
+        return Err(HullError::ShipNotFound);
+    }
+    {
+        let sys = world
+            .ledger
+            .get_mut(system)
+            .ok_or(HullError::SystemNotFound)?;
+        let have = sys.outputs_stock.get(ammo_id).copied().unwrap_or(0.0);
+        if have + 1e-12 < qty {
+            return Err(HullError::InsufficientFuel);
+        }
+        *sys.outputs_stock.get_mut(ammo_id).unwrap() = (have - qty).max(0.0);
+        if sys.outputs_stock.get(ammo_id).copied().unwrap_or(0.0) <= 1e-12 {
+            sys.outputs_stock.remove(ammo_id);
+        }
+    }
+    let ship = world.ships.get_mut(&ship_id).ok_or(HullError::ShipNotFound)?;
+    load_magazine(ship, ammo_id, qty)
+}
+
 /// Catalog recipe that produces this fuel tier (day-one map).
 pub fn fuel_recipe_for_tier(fuel_tier: &str) -> Option<&'static str> {
     match fuel_tier {
@@ -1277,5 +1353,116 @@ mod tests {
         assert!(!auto_tool_design_if_yard_ready(&mut w, empire, did, system).unwrap());
     }
 
+    #[test]
+    fn maintenance_drains_and_low_accrues_damage() {
+        let d = make_design(
+            EntityId(210),
+            "maint",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        // burn_rate = 0.01 * 2 = 0.02 per tick
+        assert!((maintenance_burn_rate(&d) - 0.02).abs() < 1e-12);
+        let mut s = spawn_instance(EntityId(211), &d, 1.0);
+        assert!((s.maintenance - 1.0).abs() < 1e-12);
+        let m = apply_ship_maintenance(&mut s, &d, 10);
+        // 1.0 - 0.02*10 = 0.8, still above 0.25 → no damage
+        assert!((m - 0.8).abs() < 1e-9);
+        assert!((s.damage).abs() < 1e-12);
+        // push below 0.25: need another 0.8/0.02 = 40 ticks → 0.0, damage applies
+        let m2 = apply_ship_maintenance(&mut s, &d, 40);
+        assert!((m2 - 0.0).abs() < 1e-9);
+        assert!(s.damage > 0.0);
+        assert!((s.damage - 0.01 * 40.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn apply_ship_maintenance_on_world_gates_design() {
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(211);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        let did = register_design(
+            &mut w,
+            empire,
+            "maint_world",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        tool_yard(&mut w, empire, did).unwrap();
+        let sid = build_ship(&mut w, empire, did, 2.0).unwrap();
+        let m = apply_ship_maintenance_on_world(&mut w, sid, 5).unwrap();
+        assert!((m - (1.0 - 0.02 * 5.0)).abs() < 1e-9);
+        assert!((w.ships.get(&sid).unwrap().damage).abs() < 1e-12);
+    }
+
+    #[test]
+    fn restock_magazine_from_system_stock_and_empty() {
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(212);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        let did = register_design(
+            &mut w,
+            empire,
+            "ammo_boat",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        tool_yard(&mut w, empire, did).unwrap();
+        let sid = build_ship(&mut w, empire, did, 2.0).unwrap();
+        w.ledger
+            .get_mut(system)
+            .unwrap()
+            .outputs_stock
+            .insert("ammo.kinetic".into(), 7.0);
+        let left = restock_magazine_from_system(&mut w, sid, system, "ammo.kinetic", 5.0).unwrap();
+        assert!((left - 5.0).abs() < 1e-9);
+        assert!(
+            (w.ships
+                .get(&sid)
+                .unwrap()
+                .magazines
+                .get("ammo.kinetic")
+                .copied()
+                .unwrap()
+                - 5.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (w.ledger
+                .get(system)
+                .unwrap()
+                .outputs_stock
+                .get("ammo.kinetic")
+                .copied()
+                .unwrap()
+                - 2.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(matches!(
+            restock_magazine_from_system(&mut w, sid, system, "ammo.kinetic", 9.0).unwrap_err(),
+            HullError::InsufficientFuel
+        ));
+        // empty stock path
+        w.ledger
+            .get_mut(system)
+            .unwrap()
+            .outputs_stock
+            .remove("ammo.kinetic");
+        assert!(matches!(
+            restock_magazine_from_system(&mut w, sid, system, "ammo.kinetic", 1.0).unwrap_err(),
+            HullError::InsufficientFuel
+        ));
+    }
 
 }
