@@ -435,6 +435,18 @@ impl<'a> Operator<'a> {
         Ok(())
     }
 
+    /// Install a body-scoped facility (habitat_seal / mine_auto / lab): unlock + BOM + soaks.
+    pub fn install_body_facility(
+        &mut self,
+        empire_id: EntityId,
+        system: EntityId,
+        body_id: EntityId,
+        facility_id: &str,
+    ) -> Result<(), OperatorError> {
+        crate::worlds::install_facility_on_body(self.world, empire_id, system, body_id, facility_id)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Evacuate a body (clear pops; optional ash automation).
     pub fn evacuate_colony(
         &mut self,

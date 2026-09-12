@@ -76,6 +76,112 @@ pub fn apply_facility_soaks(body: &mut BodyEntity, empire: &EmpireEntity) {
     }
 }
 
+/// Errors for body facility install (Phase D).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorldsError {
+    BodyNotFound,
+    BodySystemMismatch,
+    EmpireNotFound,
+    FacilityNotUnlocked(String),
+    FacilityNotBodyScoped(String),
+    NoBomRecipe(String),
+    RecipeFailed(String),
+}
+
+impl std::fmt::Display for WorldsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BodyNotFound => write!(f, "body not found"),
+            Self::BodySystemMismatch => write!(f, "body does not belong to system"),
+            Self::EmpireNotFound => write!(f, "empire not found"),
+            Self::FacilityNotUnlocked(id) => write!(f, "facility not unlocked {id}"),
+            Self::FacilityNotBodyScoped(id) => write!(f, "facility not body-scoped {id}"),
+            Self::NoBomRecipe(id) => write!(f, "facility has no bom_recipe {id}"),
+            Self::RecipeFailed(id) => write!(f, "recipe failed {id}"),
+        }
+    }
+}
+
+impl std::error::Error for WorldsError {}
+
+fn is_body_scoped_facility(facility_id: &str) -> bool {
+    matches!(
+        facility_id,
+        "facility.habitat_seal" | "facility.mine_auto" | "facility.lab"
+    )
+}
+
+/// Read `facility.bom_recipe` from the embedded cosmology catalog.
+pub fn facility_bom_recipe(facility_id: &str) -> Option<&'static str> {
+    crate::cosmology::embedded_catalog()
+        .facilities
+        .iter()
+        .find(|f| f.id == facility_id)
+        .and_then(|f| f.bom_recipe.as_deref())
+}
+
+/// Install a body-scoped facility: unlock gate + BOM recipe consume + soak / automation effects.
+///
+/// Body-scoped only: `facility.habitat_seal`, `facility.mine_auto`, `facility.lab`.
+/// `facility.yard` and unknown ids return `FacilityNotBodyScoped`.
+pub fn install_facility_on_body(
+    world: &mut crate::world::World,
+    empire_id: crate::entity::EntityId,
+    system: crate::entity::EntityId,
+    body_id: crate::entity::EntityId,
+    facility_id: &str,
+) -> Result<(), WorldsError> {
+    use crate::research::empire_has_unlock;
+
+    if !is_body_scoped_facility(facility_id) {
+        return Err(WorldsError::FacilityNotBodyScoped(facility_id.to_string()));
+    }
+
+    {
+        let body = world
+            .ledger
+            .get_body(body_id)
+            .ok_or(WorldsError::BodyNotFound)?;
+        if body.system != system {
+            return Err(WorldsError::BodySystemMismatch);
+        }
+    }
+
+    {
+        let empire = world
+            .ledger
+            .get_empire(empire_id)
+            .ok_or(WorldsError::EmpireNotFound)?;
+        if !empire_has_unlock(empire, facility_id) {
+            return Err(WorldsError::FacilityNotUnlocked(facility_id.to_string()));
+        }
+    }
+
+    let recipe = facility_bom_recipe(facility_id)
+        .ok_or_else(|| WorldsError::NoBomRecipe(facility_id.to_string()))?;
+
+    let ran = crate::matter::try_run_recipe(world, system, recipe)
+        .map_err(|_| WorldsError::RecipeFailed(recipe.to_string()))?;
+    if !ran {
+        return Err(WorldsError::RecipeFailed(recipe.to_string()));
+    }
+
+    let empire = world
+        .ledger
+        .get_empire(empire_id)
+        .ok_or(WorldsError::EmpireNotFound)?
+        .clone();
+    let body = world
+        .ledger
+        .get_body_mut(body_id)
+        .ok_or(WorldsError::BodyNotFound)?;
+    apply_facility_soaks(body, &empire);
+    if facility_id == "facility.mine_auto" {
+        body.automation_active = true;
+    }
+    Ok(())
+}
+
 pub fn evacuate_body(body: &mut BodyEntity, leave_automation: bool) {
     body.pops = 0.0;
     if leave_automation {
@@ -298,5 +404,155 @@ mod tests {
         unlock_segment(&mut empire, &find_segment("seg.habitat_seal").unwrap()).unwrap();
         apply_facility_soaks(&mut body, &empire);
         assert!((body.structure_soak - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn facility_bom_recipe_from_catalog() {
+        assert_eq!(
+            facility_bom_recipe("facility.habitat_seal"),
+            Some("recipe.habitat_seal_mk1")
+        );
+        assert_eq!(
+            facility_bom_recipe("facility.mine_auto"),
+            Some("recipe.mine_auto_mk1")
+        );
+        assert_eq!(facility_bom_recipe("facility.lab"), None);
+        assert_eq!(
+            facility_bom_recipe("facility.yard"),
+            Some("recipe.yard_mk1")
+        );
+        assert_eq!(facility_bom_recipe("facility.unknown"), None);
+    }
+
+    #[test]
+    fn install_habitat_seal_on_body_consumes_recipe_and_soaks() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(77);
+        let system = *w.ledger.systems().next().unwrap().0;
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let body_id = w.ledger.spawn_body(system);
+        unlock_segment(
+            w.ledger.get_empire_mut(empire).unwrap(),
+            &find_segment("seg.habitat_seal").unwrap(),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.organics", 10.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.volatiles", 5.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.ore_binding", 4.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        assert_eq!(w.ledger.get_body(body_id).unwrap().structure_soak, 0.0);
+        install_facility_on_body(&mut w, empire, system, body_id, "facility.habitat_seal").unwrap();
+        let body = w.ledger.get_body(body_id).unwrap();
+        assert!((body.structure_soak - 2.0).abs() < 1e-9);
+        let org: f64 = w
+            .ledger
+            .get(system)
+            .unwrap()
+            .deposits
+            .iter()
+            .filter(|d| d.stock_id == "stock.organics")
+            .map(|d| d.quantity)
+            .sum();
+        assert!(org < 1e-9, "BOM organics should be consumed");
+    }
+
+    #[test]
+    fn install_facility_without_unlock_errors() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::world::World;
+        let mut w = World::new(78);
+        let system = *w.ledger.systems().next().unwrap().0;
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let body_id = w.ledger.spawn_body(system);
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.organics", 10.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.volatiles", 5.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.ore_binding", 4.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        let err =
+            install_facility_on_body(&mut w, empire, system, body_id, "facility.habitat_seal")
+                .unwrap_err();
+        assert!(matches!(err, WorldsError::FacilityNotUnlocked(_)));
+        assert_eq!(w.ledger.get_body(body_id).unwrap().structure_soak, 0.0);
+    }
+
+    #[test]
+    fn install_mine_auto_sets_automation_and_soaks() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(79);
+        let system = *w.ledger.systems().next().unwrap().0;
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let body_id = w.ledger.spawn_body(system);
+        unlock_segment(
+            w.ledger.get_empire_mut(empire).unwrap(),
+            &find_segment("seg.mine_auto").unwrap(),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.ore_binding", 15.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.rare_earth", 3.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        assert!(!w.ledger.get_body(body_id).unwrap().automation_active);
+        install_facility_on_body(&mut w, empire, system, body_id, "facility.mine_auto").unwrap();
+        let body = w.ledger.get_body(body_id).unwrap();
+        assert!(body.automation_active);
+        assert!((body.upkeep_soak - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn install_yard_is_not_body_scoped() {
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(80);
+        let system = *w.ledger.systems().next().unwrap().0;
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let body_id = w.ledger.spawn_body(system);
+        unlock_segment(
+            w.ledger.get_empire_mut(empire).unwrap(),
+            &find_segment("seg.yard").unwrap(),
+        )
+        .unwrap();
+        let err =
+            install_facility_on_body(&mut w, empire, system, body_id, "facility.yard").unwrap_err();
+        assert!(matches!(err, WorldsError::FacilityNotBodyScoped(_)));
     }
 }
