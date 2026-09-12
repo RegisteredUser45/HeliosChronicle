@@ -510,6 +510,21 @@ impl<'a> Operator<'a> {
 
 
 
+
+    /// Jettison cargo from a ship (capped to loaded).
+    pub fn jettison_ship_cargo(
+        &mut self,
+        ship_id: EntityId,
+        qty: f64,
+    ) -> Result<f64, OperatorError> {
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        crate::hulls::jettison_cargo(ship, qty).map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Transfer cargo between two ships (dest capacity gated).
     pub fn transfer_ship_cargo(
         &mut self,

@@ -331,6 +331,17 @@ pub fn transfer_fuel(
 /// Unload cargo from ship; errors if not enough loaded.
 
 /// Move cargo between ships; destination must have remaining capacity.
+
+/// Dump cargo overboard (qty capped to loaded). Returns amount jettisoned.
+pub fn jettison_cargo(ship: &mut ShipInstance, qty: f64) -> Result<f64, HullError> {
+    if !qty.is_finite() || qty < 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    let take = qty.min(ship.cargo_qty).max(0.0);
+    ship.cargo_qty = (ship.cargo_qty - take).max(0.0);
+    Ok(take)
+}
+
 pub fn transfer_cargo(
     from: &mut ShipInstance,
     to_design: &ShipDesign,
@@ -888,6 +899,20 @@ mod tests {
             transfer_cargo(&mut a, &d, &mut b, 20.0).unwrap_err(),
             HullError::InsufficientFuel
         ));
+    }
+
+    #[test]
+    fn jettison_cargo_caps_to_loaded() {
+        let d = make_design(
+            EntityId(140),
+            "h",
+            vec!["module.engine_chem".into(), "module.cargo_hold".into()],
+        )
+        .unwrap();
+        let mut s = spawn_instance(EntityId(141), &d, 1.0);
+        load_cargo(&d, &mut s, 4.0).unwrap();
+        assert!((jettison_cargo(&mut s, 10.0).unwrap() - 4.0).abs() < 1e-9);
+        assert!((s.cargo_qty).abs() < 1e-9);
     }
 
 }
