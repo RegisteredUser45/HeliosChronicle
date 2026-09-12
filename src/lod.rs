@@ -35,3 +35,25 @@ impl LodMode {
         }
     }
 }
+
+/// Whether a system should skip fine per-tick work this step (Lock 10).
+///
+/// Coarse + quiet + no armed fuse → skip. Fine world never skips. Fuse-armed
+/// systems stay on the path so absolute `fuse_end_tick` can still fire.
+pub fn skip_quiet_fine_work(world_lod: LodMode, hint: LodHint, fuse_armed: bool) -> bool {
+    matches!(world_lod, LodMode::Coarse) && matches!(hint, LodHint::Quiet) && !fuse_armed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quiet_skip_only_when_coarse_quiet_and_unarmed() {
+        assert!(skip_quiet_fine_work(LodMode::Coarse, LodHint::Quiet, false));
+        assert!(!skip_quiet_fine_work(LodMode::Coarse, LodHint::Quiet, true));
+        assert!(!skip_quiet_fine_work(LodMode::Coarse, LodHint::Hot, false));
+        assert!(!skip_quiet_fine_work(LodMode::Fine, LodHint::Quiet, false));
+        assert!(!skip_quiet_fine_work(LodMode::Fine, LodHint::Hot, true));
+    }
+}

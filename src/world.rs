@@ -221,11 +221,11 @@ impl World {
         let mut deplete_checks: Vec<EntityId> = Vec::new();
 
         for (_, sys) in self.ledger.systems_mut() {
-            let process = match lod {
-                LodMode::Fine => true,
-                LodMode::Coarse => matches!(sys.lod_hint, crate::lod::LodHint::Hot)
-                    || sys.fuse_end_tick.is_some(),
-            };
+            let process = !crate::lod::skip_quiet_fine_work(
+                lod,
+                sys.lod_hint,
+                sys.fuse_end_tick.is_some(),
+            );
 
             if process {
                 // Placeholder "work": Phase C owns real drain; B reacts at threshold.

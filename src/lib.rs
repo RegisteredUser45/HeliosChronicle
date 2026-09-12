@@ -42,7 +42,7 @@ pub use globals::Globals;
 pub use knowledge::{
     acquire_ko, confirm_ko, emit_ko, inject_rumor, salvage_contact, CarrierId, EmitKoParams,
     KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation, confess_ko, leak_ko,};
-pub use lod::{LodHint, LodMode};
+pub use lod::{skip_quiet_fine_work, LodHint, LodMode};
 pub use matter::{
     add_deposit, compute_binding_remainder, deposit_counts_as_binding, extract,
     extract_abandoned_auto, extract_civilian, extract_foreign, extract_state,
