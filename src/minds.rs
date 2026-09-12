@@ -303,6 +303,41 @@ pub fn execute_claim_feed_intent(
 ///
 /// Salt-family intents return `Ok(None)` when `salt_emit_enabled` is false, or
 /// when enabled but `has_knowledge_path` is false (empty knowledge → no order).
+
+/// Apply Abandon intent: clear pops and leave C abandoned automation running.
+///
+/// Uses D `evacuate_body(..., leave_automation=true)` on every body in the
+/// system so Lock 8 abandoned-auto drains can continue after the polity leaves.
+pub fn execute_abandon_intent(
+    world: &mut World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) -> usize {
+    let body_ids: Vec<EntityId> = world
+        .ledger
+        .bodies_for_system(system_id)
+        .map(|(id, _)| *id)
+        .collect();
+    let tick = world.master_tick;
+    let mut n = 0usize;
+    for bid in body_ids {
+        if let Some(body) = world.ledger.get_body_mut(bid) {
+            worlds::evacuate_body(body, true);
+            n += 1;
+            world.log.append(
+                tick,
+                EventKind::OperatorMutation {
+                    entity: bid,
+                    field: "abandon".into(),
+                    old: String::new(),
+                    new: format!("ai_order leave_automation=true empire={empire_id}"),
+                },
+            );
+        }
+    }
+    n
+}
+
 pub fn try_emit_order(
     world: &mut World,
     empire_id: EntityId,
@@ -367,6 +402,12 @@ pub fn try_emit_order(
     if matches!(intent, OrderIntent::ClaimFeed) && matches!(source, OrderSource::Ai) {
         if let Some(sys) = target_ref {
             let _ = execute_claim_feed_intent(world, empire_id, sys);
+        }
+    }
+    // Ai Abandon → D evacuate_body leave_automation=true (C abandoned_auto).
+    if matches!(intent, OrderIntent::Abandon) && matches!(source, OrderSource::Ai) {
+        if let Some(sys) = target_ref {
+            let _ = execute_abandon_intent(world, empire_id, sys);
         }
     }
     Ok(Some(id))
@@ -1651,6 +1692,36 @@ mod minds_tests {
         assert!(!w.minds_flags.salt_emit_enabled);
     }
 
+
+    #[test]
+    fn ai_abandon_leaves_automation() {
+        let mut w = World::new(130);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let body = w.ledger.spawn_body(sys);
+        {
+            let b = w.ledger.get_body_mut(body).unwrap();
+            b.pops = 55.0;
+            b.automation_active = false;
+        }
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::Abandon,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("abandon order");
+        assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::Abandon);
+        let b = w.ledger.get_body(body).unwrap();
+        assert_eq!(b.pops, 0.0);
+        assert!(
+            b.automation_active,
+            "Abandon must leave C abandoned automation running"
+        );
+    }
+
     #[test]
     fn minds_tick_can_expand_survey_unknown() {
         let mut w = World::new(131);
@@ -1714,6 +1785,7 @@ mod minds_tests {
         assert!(!w.minds_flags.salt_emit_enabled);
     }
 
+    #[test]
     fn wilderness_unknown_not_infinite() {
         let mut w = World::new(56);
         let empire = *w.ledger.empires().next().unwrap().0;
