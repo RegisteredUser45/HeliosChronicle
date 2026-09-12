@@ -56,4 +56,42 @@ mod tests {
         assert!(!skip_quiet_fine_work(LodMode::Fine, LodHint::Quiet, false));
         assert!(!skip_quiet_fine_work(LodMode::Fine, LodHint::Hot, true));
     }
+
+    #[test]
+    fn hot_ttl_cools_only_when_expired() {
+        assert_eq!(hot_until_tick(10, DEFAULT_HOT_TTL_TICKS), 42);
+        assert_eq!(
+            cool_hot_if_expired(41, Some(42), LodHint::Hot),
+            LodHint::Hot
+        );
+        assert_eq!(
+            cool_hot_if_expired(42, Some(42), LodHint::Hot),
+            LodHint::Quiet
+        );
+        assert_eq!(cool_hot_if_expired(100, None, LodHint::Hot), LodHint::Hot);
+        assert_eq!(
+            cool_hot_if_expired(100, Some(1), LodHint::Quiet),
+            LodHint::Quiet
+        );
+    }
 }
+
+/// Default Hot dwell in master ticks before cool-down (Lock 10).
+pub const DEFAULT_HOT_TTL_TICKS: u64 = 32;
+
+/// Absolute tick when a Hot mark should expire (`now + ttl`).
+pub fn hot_until_tick(now: u64, ttl: u64) -> u64 {
+    now.saturating_add(ttl.max(1))
+}
+
+/// Cool Hot → Quiet once `now` reaches `hot_until`.
+///
+/// `None` means no TTL (stay Hot) so existing promotions keep working
+/// until a caller stamps an expiry.
+pub fn cool_hot_if_expired(now: u64, hot_until: Option<u64>, hint: LodHint) -> LodHint {
+    match (hint, hot_until) {
+        (LodHint::Hot, Some(until)) if now >= until => LodHint::Quiet,
+        (hint, _) => hint,
+    }
+}
+

@@ -132,6 +132,13 @@ impl<'a> Operator<'a> {
                 };
                 let old = format!("{:?}", entity.lod_hint);
                 entity.lod_hint = v;
+                entity.hot_until = match v {
+                    LodHint::Hot => Some(crate::lod::hot_until_tick(
+                        tick,
+                        crate::lod::DEFAULT_HOT_TTL_TICKS,
+                    )),
+                    LodHint::Quiet => None,
+                };
                 (old, format!("{:?}", v))
             }
             "salt_willingness" | "punishment_willingness" | "evacuate_vs_die_in_place" => {

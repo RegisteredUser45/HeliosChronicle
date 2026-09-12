@@ -42,7 +42,7 @@ pub use globals::Globals;
 pub use knowledge::{
     acquire_ko, confirm_ko, emit_ko, inject_rumor, salvage_contact, CarrierId, EmitKoParams,
     KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation, confess_ko, leak_ko,};
-pub use lod::{skip_quiet_fine_work, LodHint, LodMode};
+pub use lod::{cool_hot_if_expired, hot_until_tick, skip_quiet_fine_work, LodHint, LodMode, DEFAULT_HOT_TTL_TICKS};
 pub use matter::{
     add_deposit, compute_binding_remainder, deposit_counts_as_binding, extract,
     extract_abandoned_auto, extract_civilian, extract_foreign, extract_state,
@@ -517,6 +517,19 @@ mod tests {
         assert_eq!(w.standing.get(witness, actor), -STANDING_RUMOR);
         confirm_ko(&mut w, ko);
         assert_eq!(w.standing.get(witness, actor), -STANDING_CONFIRMED);
+    }
+
+    #[test]
+    fn hot_ttl_cools_stamped_system() {
+        let mut w = World::new(1);
+        let id = *w.ledger().systems().next().unwrap().0;
+        w.ledger.get_mut(id).unwrap().lod_hint = LodHint::Hot;
+        w.ledger.get_mut(id).unwrap().hot_until = Some(3);
+        w.tick(2);
+        assert_eq!(w.ledger().get(id).unwrap().lod_hint, LodHint::Hot);
+        w.tick(2);
+        assert_eq!(w.ledger().get(id).unwrap().lod_hint, LodHint::Quiet);
+        assert_eq!(w.ledger().get(id).unwrap().hot_until, None);
     }
 
     #[test]

@@ -115,6 +115,18 @@ impl World {
         world
     }
 
+    /// Lock 10: expire Hot hints whose `hot_until` has been reached.
+    pub fn apply_hot_ttl_cooldown(&mut self) {
+        let now = self.master_tick;
+        for (_, sys) in self.ledger.systems_mut() {
+            let next = crate::lod::cool_hot_if_expired(now, sys.hot_until, sys.lod_hint);
+            if next != sys.lod_hint {
+                sys.lod_hint = next;
+                sys.hot_until = None;
+            }
+        }
+    }
+
     pub fn master_tick(&self) -> u64 {
         self.master_tick
     }
@@ -248,6 +260,7 @@ impl World {
         }
 
         self.master_tick = to;
+        self.apply_hot_ttl_cooldown();
 
         // Issue 11 / lean: do not append FuseTick or TickAdvanced (tick spam).
         // EventKind variants remain for serde + old saves; FuseEnd stays notable.

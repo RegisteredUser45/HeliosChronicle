@@ -62,6 +62,9 @@ pub struct SystemEntity {
     pub is_home_capital: bool,
     pub home_flag: bool,
     pub lod_hint: LodHint,
+    /// Absolute tick when Hot expires (`None` = no TTL).
+    #[serde(default)]
+    pub hot_until: Option<u64>,
     #[serde(default)]
     pub wilderness: bool,
     #[serde(default)]
@@ -119,6 +122,7 @@ impl SystemEntity {
             is_home_capital: false,
             home_flag: false,
             lod_hint: LodHint::Quiet,
+            hot_until: None,
             wilderness: false,
             surveyed: true,
             claimed: true,
