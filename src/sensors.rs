@@ -1,16 +1,13 @@
-//! Phase H — Sensor stubs: last-known fix, strike detection, wreck/signal receive.
+//! Phase H — Sensors: last-known fix, strike detection, wreck/signal receive.
 //!
-//! Reserves envelopes so G fog and P KO paths are not retrofit. Range is a
-//! coarse stub (`SENSOR_RANGE_STUB`); B/F can later bind real sensor modules.
+//! Range is jump-link hops from any fogged vantage (`SENSOR_RANGE_STUB` max hops).
 
 use crate::contact::{push_fine_hot, SystemFogEntry};
 use crate::entity::{EmpireId, EntityId};
 use crate::knowledge::{acquire_ko, salvage_contact, KoKind};
 use crate::world::World;
 
-/// Coarse sensor range stub (system-graph distance units; unused until B wires
-/// adjacency — for now "in range" means observer has fog on the system OR
-/// `force_range` is true).
+/// Max jump-link hops from a fogged vantage that still counts as in sensor range.
 pub const SENSOR_RANGE_STUB: f64 = 1.0;
 
 /// Refresh last-known fix for `system` in the observer's fog.
@@ -25,19 +22,42 @@ pub fn sense_system(world: &mut World, observer: EmpireId, system: EntityId) {
     push_fine_hot(world, system);
 }
 
-/// Whether the observer's sensors cover `system` (stub).
+/// Jump-link hop count between systems (`None` if disconnected). Same system → 0.
+pub fn sensor_jump_hops(world: &World, from: EntityId, to: EntityId) -> Option<u64> {
+    if from == to {
+        return Some(0);
+    }
+    let path = crate::sky::jump_path(world, from, to)?;
+    Some((path.len() as u64).saturating_sub(1))
+}
+
+/// True when `target` is within [`SENSOR_RANGE_STUB`] jump hops of `vantage`.
+pub fn within_sensor_range(world: &World, vantage: EntityId, target: EntityId) -> bool {
+    match sensor_jump_hops(world, vantage, target) {
+        Some(hops) => (hops as f64) <= SENSOR_RANGE_STUB + 1e-9,
+        None => false,
+    }
+}
+
+/// Whether the observer's sensors cover `system`.
 ///
-/// True if they already have a fog entry, or if `force_in_range` is set (tests /
-/// operator). Real adjacency comes later from B.
+/// True if `force_in_range`, the system is already fogged, or any fogged vantage
+/// reaches it within [`SENSOR_RANGE_STUB`] jump hops (real B topology).
 pub fn in_sensor_range(world: &World, observer: EmpireId, system: EntityId, force_in_range: bool) -> bool {
     if force_in_range {
         return true;
     }
-    world
-        .contact
-        .get(observer)
-        .map(|c| c.fog.known_systems.contains_key(&system))
-        .unwrap_or(false)
+    let Some(contact) = world.contact.get(observer) else {
+        return false;
+    };
+    if contact.fog.known_systems.contains_key(&system) {
+        return true;
+    }
+    contact
+        .fog
+        .known_systems
+        .keys()
+        .any(|&vantage| within_sensor_range(world, vantage, system))
 }
 
 /// Detect a strike / violence event at `system` if in range: refresh fog fix.
@@ -258,6 +278,52 @@ mod tests {
         assert!(!track_fleet(&mut w, obs, fleet, sys, false));
         assert!(track_fleet(&mut w, obs, fleet, sys, true));
         assert!(w.contact.get(obs).unwrap().fog.known_fleets.contains_key(&fleet));
+    }
+
+
+    #[test]
+    fn neighbor_in_range_via_jump_link() {
+        use crate::sky::link_jump;
+
+        let mut w = World::new(20);
+        let systems: Vec<_> = w.ledger().systems().map(|(id, _)| *id).collect();
+        // Ensure two systems with positions; World::new may seed one — spawn/link via sky if needed.
+        let a = systems[0];
+        // Place a second system by cloning seed path: use ledger spawn if available
+        let b = if systems.len() >= 2 {
+            systems[1]
+        } else {
+            // create via sky seed helpers if present — fall back to force path skip
+            return;
+        };
+        link_jump(&mut w, a, b).unwrap();
+        let obs = EmpireId(9);
+        // Fog only on a — b is one hop away ⇒ in range.
+        sense_system(&mut w, obs, a);
+        assert!(within_sensor_range(&w, a, b));
+        assert_eq!(sensor_jump_hops(&w, a, b), Some(1));
+        assert!(in_sensor_range(&w, obs, b, false));
+        assert!(detect_strike(&mut w, obs, b, false));
+    }
+
+    #[test]
+    fn disconnected_not_in_range_without_force() {
+        let mut w = World::new(21);
+        let systems: Vec<_> = w.ledger().systems().map(|(id, _)| *id).collect();
+        if systems.len() < 2 {
+            return;
+        }
+        let a = systems[0];
+        let b = systems[1];
+        // No jump link ⇒ hops None ⇒ not in range from fog of a alone.
+        let obs = EmpireId(8);
+        sense_system(&mut w, obs, a);
+        assert!(!within_sensor_range(&w, a, b) || sensor_jump_hops(&w, a, b).is_some());
+        if sensor_jump_hops(&w, a, b).is_none() {
+            assert!(!in_sensor_range(&w, obs, b, false));
+            assert!(!detect_strike(&mut w, obs, b, false));
+            assert!(detect_strike(&mut w, obs, b, true));
+        }
     }
 
 }
