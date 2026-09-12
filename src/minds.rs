@@ -394,12 +394,30 @@ fn ensure_system_body(world: &mut World, system_id: EntityId) -> EntityId {
     world.ledger.spawn_body(system_id)
 }
 
+
+/// NEW: settlement claims the system feed (B `claim_system` + H `sense_system`).
+///
+/// Players feel this when Ai PlantCity/PlantYard lands — wilderness immortality
+/// ends and fog opens on the settled system (same claim path as ClaimFeed).
+pub fn settle_claims_system(
+    world: &mut World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) -> bool {
+    let ok = sky::claim_system(world, system_id);
+    if ok {
+        crate::sensors::sense_system(world, EmpireId(empire_id.0), system_id);
+    }
+    ok
+}
+
 /// Ai PlantCity: ensure a body, seed pops, apply D facility soaks.
 pub fn execute_plant_city_intent(
     world: &mut World,
     empire_id: EntityId,
     system_id: EntityId,
 ) -> EntityId {
+    let _ = settle_claims_system(world, empire_id, system_id);
     let body_id = ensure_system_body(world, system_id);
     if let Some(body) = world.ledger.get_body_mut(body_id) {
         body.pops = (body.pops + PLANT_CITY_POPS).max(PLANT_CITY_POPS);
@@ -419,6 +437,7 @@ pub fn execute_plant_yard_intent(
     empire_id: EntityId,
     system_id: EntityId,
 ) -> EntityId {
+    let _ = settle_claims_system(world, empire_id, system_id);
     let body_id = ensure_system_body(world, system_id);
     if let Some(body) = world.ledger.get_body_mut(body_id) {
         body.structure_soak = body.structure_soak.max(PLANT_YARD_STRUCTURE_SOAK);
@@ -1966,6 +1985,48 @@ mod minds_tests {
         assert!((qty - 75.0).abs() < 1e-6, "100-25=75 left, got {qty}");
     }
 
+
+
+    #[test]
+    fn settle_claims_system_claims_and_senses() {
+        let mut w = World::new(190);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = w.ledger.spawn_wilderness_system();
+        assert!(!w.ledger.get(sys).unwrap().claimed);
+        w.contact.ensure(EmpireId(empire.0));
+        assert!(settle_claims_system(&mut w, empire, sys));
+        assert!(w.ledger.get(sys).unwrap().claimed);
+        assert!(
+            w.contact
+                .get(EmpireId(empire.0))
+                .unwrap()
+                .fog
+                .known_systems
+                .contains_key(&sys)
+        );
+    }
+
+    #[test]
+    fn ai_plant_city_claims_feed() {
+        let mut w = World::new(191);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = w.ledger.spawn_wilderness_system();
+        w.contact.ensure(EmpireId(empire.0));
+        assert!(!w.ledger.get(sys).unwrap().claimed);
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::PlantCity,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("plant city");
+        assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::PlantCity);
+        assert!(w.ledger.get(sys).unwrap().claimed);
+        let pops: f64 = w.ledger.bodies_for_system(sys).map(|(_, b)| b.pops).sum();
+        assert!(pops >= PLANT_CITY_POPS - 1e-9);
+    }
 
     #[test]
     fn ai_plant_city_seeds_pops() {
