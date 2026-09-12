@@ -59,6 +59,8 @@ Empires do not print mass. The only new tonnes in the universe come from **feed 
 9. Refugees / wrecks / signals are real knowledge; standing only along those paths.
 10. LOD mandatory early; cut what breaks long headless runs.
 
+11. **Chronicle / History, not full replay** — notable EventLog moments only (tick, system, kind, one-line); shell history panel; no tick-perfect recording.
+
 ---
 
 ## 3. Rules that do not move
@@ -317,7 +319,7 @@ The main window is always:
 - a **map** that can show one system or the galaxy / jump graph without replacing the shell
 - **pan and zoom** — drag the view; zoom in to a body or task group; zoom out to the jump network. Same map, different scale.
 - **time controls** (pause, step, increment size)
-- an **event strip** (chronicle plus operator edits)
+- an **event strip** / history strip (notable chronicle moments plus operator edits)
 - a **viewpoint control**
 
 The map is the root of the tree. Clicking a thing does not “enter a different game.” It opens or focuses a window.
@@ -402,7 +404,7 @@ Every window has a **breadcrumb** of that path. Closing a child returns to the p
 - **Design** — module list, mass/power/crew/BOM/fuel tier.
 - **Yard / fleet** — tooling, instances, orders, fuel and maintenance state.
 - **Contact** — standing, treaties, known atrocities.
-- **Chronicle** — events, including operator writes.
+- **Chronicle / History** — notable EventLog moments (tick, system, kind, one-line); filterable; click-through to records. Not a tick-perfect replay viewer.
 - **Record editor** — same tree, write mode on.
 
 ### What the UI will not do
@@ -416,7 +418,7 @@ It will not hide the economy inside sliders with no tonnes. It will not replace 
 
 **Intervention.** Pause or not. Change any field. Spawn or delete systems. Force dry, force pause, force nova. Glass a world or clear fallout. Arm a pistol. Forge a rumor. Possess one empire.
 
-Every mutation is a chronicle event so replay stays honest.
+Every mutation is a chronicle event so the history stays honest.
 
 ---
 
@@ -477,6 +479,7 @@ A headless-capable 2D ledger sim of empires, matter, research, module ships, wri
 - Training on Operator (all) presented as a fair trial
 - Full ground-combat template designer
 - Asking the neural mind to run a whole economy before a one-system fleet trial works
+- Full tick-perfect replay files or a replay viewer (chronicle/history of EventLog moments instead)
 
 ### Later, not promised
 - Galaxy inset, design-vs-design split, viewpoint diff, map export
@@ -538,7 +541,7 @@ Each step ends with a save and a tick that can run with nobody at the keyboard.
 
 **I. Minds** — standing orders; doctrines (including salt and punishment); feed first, fuse second; collapse drops Home flags.
 
-**J. Operator product** — full editor, injectors, possession, replay (LOD already started in A).
+**J. Operator product** — full editor, injectors, possession, chronicle/history of EventLog moments (LOD already started in A). **No full tick replay.**
 
 **K. Empire API** — bind a client to one empire; knowledge read; typed orders; event stream; optional operator god key. Can follow I once orders exist; observe-only can land earlier.
 

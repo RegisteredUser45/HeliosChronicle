@@ -63,3 +63,14 @@ Standing only moves along knowledge paths.
 Simulation LOD is **mandatory early** (coarse ticks for quiet systems / fine for hot).
 
 Cut features that break long headless runs.
+
+## Issue 11 — Chronicle / History (no full replay)
+
+**No tick-perfect recording or replay files.**
+
+Player-facing history is a **Chronicle** of notable moments drawn from the Kernel **EventLog** (soft retention already in A). Do not build a second recording pipeline.
+
+Lean moment row: **tick**, **system** (optional / unknown ok), **kind**, **one-line** summary.
+
+Shell UI: a **history panel of moments** (filterable, click-through to records) — not a replay viewer.
+

@@ -44,7 +44,7 @@ Orders and doctrines; feed first, fuse second; Home flag on collapse.
 
 ## J — Operator
 
-Injectors, possession, replay, LOD.
+Injectors, possession, chronicle/history (EventLog moments — no full replay), LOD.
 
 ## Slices
 
