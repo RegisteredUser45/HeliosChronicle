@@ -37,7 +37,7 @@ pub use entity::{
     BodyEntity, EmpireEntity, EmpireId, EntityId, EntityLedger, EnvLayers, OrderEntity,
     OrderIntent, OrderSource, OrderStatus, SystemEntity,
 };
-pub use event::{ChronicleEvent, EventKind, EventLog, DEFAULT_MAX_LOG_EVENTS};
+pub use event::{event_one_line, ChronicleEvent, EventKind, EventLog, DEFAULT_MAX_LOG_EVENTS};
 pub use globals::Globals;
 pub use knowledge::{
     acquire_ko, confirm_ko, emit_ko, inject_rumor, salvage_contact, CarrierId, EmitKoParams,

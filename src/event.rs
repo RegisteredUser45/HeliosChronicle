@@ -180,6 +180,36 @@ pub struct ChronicleEvent {
     pub kind: EventKind,
 }
 
+
+/// Issue 11 history panel: one-line summary for a chronicle event kind.
+pub fn event_one_line(kind: &EventKind) -> String {
+    match kind {
+        EventKind::TickAdvanced { from, to, .. } => format!("tick {from}→{to}"),
+        EventKind::WorldCreated { seed } => format!("world created seed={seed}"),
+        EventKind::Deplete { system } => format!("deplete system={system}"),
+        EventKind::FuseEnd { system } => format!("fuse end system={system}"),
+        EventKind::SegmentResearched { empire, segment } => {
+            format!("researched {segment} empire={empire}")
+        }
+        EventKind::DesignRegistered { empire, design } => {
+            format!("design {design} registered empire={empire}")
+        }
+        EventKind::YardTooled { empire, design } => {
+            format!("yard tooled design={design} empire={empire}")
+        }
+        EventKind::ShipBuilt { empire, ship, design } => {
+            format!("ship {ship} built design={design} empire={empire}")
+        }
+        EventKind::BodyEvacuated { body, leave_automation } => {
+            format!("evacuated body={body} automation={leave_automation}")
+        }
+        EventKind::OperatorMutation { entity, field, .. } => {
+            format!("operator {field} entity={entity}")
+        }
+        other => format!("{other:?}"),
+    }
+}
+
 /// Default soft cap for retained chronicle events (Lock 10).
 /// `0` means unlimited. Long headless runs must not grow RAM unbounded.
 pub const DEFAULT_MAX_LOG_EVENTS: usize = 50_000;
@@ -279,5 +309,21 @@ impl EventLog {
 
     pub fn next_seq(&self) -> u64 {
         self.next_seq
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::EntityId;
+
+    #[test]
+    fn body_evacuated_one_line() {
+        let s = event_one_line(&EventKind::BodyEvacuated {
+            body: EntityId(3),
+            leave_automation: true,
+        });
+        assert!(s.contains("evacuated"));
+        assert!(s.contains("automation=true"));
     }
 }
