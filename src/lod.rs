@@ -85,6 +85,26 @@ mod tests {
         stamp_hot(&mut hint, &mut until, 20, 5);
         assert_eq!(until, Some(25));
     }
+
+    #[test]
+    fn reconcile_lod_from_hot_hints_fine_iff_any_hot() {
+        assert_eq!(
+            reconcile_lod_from_hot_hints(std::iter::empty()),
+            LodMode::Coarse
+        );
+        assert_eq!(
+            reconcile_lod_from_hot_hints([LodHint::Quiet, LodHint::Quiet]),
+            LodMode::Coarse
+        );
+        assert_eq!(
+            reconcile_lod_from_hot_hints([LodHint::Quiet, LodHint::Hot]),
+            LodMode::Fine
+        );
+        assert_eq!(
+            reconcile_lod_from_hot_hints([LodHint::Hot]),
+            LodMode::Fine
+        );
+    }
 }
 
 /// Default Hot dwell in master ticks before cool-down (Lock 10).
@@ -111,4 +131,16 @@ pub fn cool_hot_if_expired(now: u64, hot_until: Option<u64>, hint: LodHint) -> L
 pub fn stamp_hot(hint: &mut LodHint, hot_until: &mut Option<u64>, now: u64, ttl: u64) {
     *hint = LodHint::Hot;
     *hot_until = Some(hot_until_tick(now, ttl));
+}
+
+/// Issue 10: world Fine while any system is Hot; Coarse when all Quiet.
+pub fn reconcile_lod_from_hot_hints<I>(hints: I) -> LodMode
+where
+    I: IntoIterator<Item = LodHint>,
+{
+    if hints.into_iter().any(|h| matches!(h, LodHint::Hot)) {
+        LodMode::Fine
+    } else {
+        LodMode::Coarse
+    }
 }

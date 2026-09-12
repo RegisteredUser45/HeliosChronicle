@@ -126,6 +126,13 @@ impl World {
         false
     }
 
+    /// Issue 10: set world LOD from current per-system Hot/Quiet hints.
+    pub fn reconcile_lod_from_hot_hints(&mut self) {
+        self.lod = crate::lod::reconcile_lod_from_hot_hints(
+            self.ledger.systems().map(|(_, sys)| sys.lod_hint),
+        );
+    }
+
     /// Lock 10: expire Hot hints whose `hot_until` has been reached.
     pub fn apply_hot_ttl_cooldown(&mut self) {
         let now = self.master_tick;
@@ -441,5 +448,21 @@ mod lock6_seed_tests {
         let id = *w.ledger.systems().last().unwrap().0;
         let sys = w.ledger.get(id).unwrap();
         assert!(!sys.deposits.is_empty());
+    }
+
+
+    #[test]
+    fn world_reconcile_lod_follows_hot_hints() {
+        let mut w = World::new(11);
+        w.minds_flags.scoring_enabled = false;
+        for (_, sys) in w.ledger.systems_mut() {
+            sys.lod_hint = crate::lod::LodHint::Quiet;
+        }
+        w.reconcile_lod_from_hot_hints();
+        assert_eq!(w.lod, crate::lod::LodMode::Coarse);
+        let id = *w.ledger.systems().next().unwrap().0;
+        assert!(w.stamp_system_hot(id));
+        w.reconcile_lod_from_hot_hints();
+        assert_eq!(w.lod, crate::lod::LodMode::Fine);
     }
 }
