@@ -465,6 +465,33 @@ impl<'a> Operator<'a> {
 
 
 
+
+    /// Burn fuel for a move (F gate + spend).
+    pub fn move_ship(
+        &mut self,
+        ship_id: EntityId,
+        burn: f64,
+    ) -> Result<f64, OperatorError> {
+        let design_id = self
+            .world
+            .ships
+            .get(&ship_id)
+            .map(|s| s.design_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        let design = self
+            .world
+            .ship_designs
+            .get(&design_id)
+            .ok_or(OperatorError::NotFound(design_id))?
+            .clone();
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        crate::hulls::try_move(&design, ship, burn).map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Whether ship crew meets design requirement.
     pub fn ship_crew_ok(&self, ship_id: EntityId) -> Result<bool, OperatorError> {
         let ship = self

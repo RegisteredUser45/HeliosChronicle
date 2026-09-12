@@ -142,6 +142,15 @@ pub fn crew_ok(design: &ShipDesign, ship: &ShipInstance) -> bool {
     ship.crew + 1e-12 >= design.crew_req
 }
 
+
+/// Attempt a move: requires [`can_move`], then burns `burn` fuel. No RNG.
+pub fn try_move(design: &ShipDesign, ship: &mut ShipInstance, burn: f64) -> Result<f64, HullError> {
+    if !can_move(design, ship) {
+        return Err(HullError::InsufficientFuel);
+    }
+    spend_fuel(ship, burn)
+}
+
 pub fn can_move(design: &ShipDesign, instance: &ShipInstance) -> bool {
     instance.design_id == design.id
         && instance.fuel_tier == design.fuel_tier
@@ -849,6 +858,21 @@ mod tests {
         inst.crew = 0.0;
         assert!(!can_move(&d, &inst));
     }
+
+    #[test]
+    fn try_move_burns_fuel() {
+        let d = make_design(
+            EntityId(150),
+            "boat",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        let mut s = spawn_instance(EntityId(151), &d, 5.0);
+        assert!((try_move(&d, &mut s, 1.5).unwrap() - 3.5).abs() < 1e-9);
+        s.fuel_qty = 0.0;
+        assert!(matches!(try_move(&d, &mut s, 0.1).unwrap_err(), HullError::InsufficientFuel));
+    }
+
 
     #[test]
     fn load_cargo_respects_capacity() {
