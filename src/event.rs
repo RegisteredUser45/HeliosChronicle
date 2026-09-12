@@ -168,6 +168,10 @@ pub enum EventKind {
         body: EntityId,
         leave_automation: bool,
     },
+    CargoJettisoned {
+        ship: EntityId,
+        qty: f64,
+    },
     ShipBuilt { empire: EntityId, ship: EntityId, design: EntityId },
 }
 
@@ -202,6 +206,9 @@ pub fn event_one_line(kind: &EventKind) -> String {
         }
         EventKind::BodyEvacuated { body, leave_automation } => {
             format!("evacuated body={body} automation={leave_automation}")
+        }
+        EventKind::CargoJettisoned { ship, qty } => {
+            format!("jettisoned {qty} cargo ship={ship}")
         }
         EventKind::OperatorMutation { entity, field, .. } => {
             format!("operator {field} entity={entity}")

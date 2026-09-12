@@ -522,7 +522,18 @@ impl<'a> Operator<'a> {
             .ships
             .get_mut(&ship_id)
             .ok_or(OperatorError::NotFound(ship_id))?;
-        crate::hulls::jettison_cargo(ship, qty).map_err(|e| OperatorError::Other(e.to_string()))
+        let dumped = crate::hulls::jettison_cargo(ship, qty).map_err(|e| OperatorError::Other(e.to_string()))?;
+        if dumped > 0.0 {
+            let tick = self.world.master_tick();
+            self.world.log_mut().append(
+                tick,
+                EventKind::CargoJettisoned {
+                    ship: ship_id,
+                    qty: dumped,
+                },
+            );
+        }
+        Ok(dumped)
     }
 
     /// Transfer cargo between two ships (dest capacity gated).
