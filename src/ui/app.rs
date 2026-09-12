@@ -41,6 +41,10 @@ pub struct HeliosApp {
     open_bodies: BTreeSet<EntityId>,
     /// Ship / fleet-detail inspector windows currently open.
     open_ships: BTreeSet<EntityId>,
+    /// Colony inspector windows (keyed by body id; several at once OK).
+    open_colonies: BTreeSet<EntityId>,
+    /// Industry inspector windows (keyed by system id; several at once OK).
+    open_industry: BTreeSet<EntityId>,
     /// Fleet list window (ShipInstance roster; no TaskGroup type yet).
     fleet_open: bool,
     /// Research inspector (labs / tech lines / unlocks).
@@ -104,6 +108,8 @@ impl HeliosApp {
             inspector_open: false,
             open_bodies: BTreeSet::new(),
             open_ships: BTreeSet::new(),
+            open_colonies: BTreeSet::new(),
+            open_industry: BTreeSet::new(),
             fleet_open: false,
             research_open: false,
             research_lab: None,
@@ -252,6 +258,8 @@ impl HeliosApp {
         };
         let mut open_body: Option<EntityId> = None;
         let mut open_ship: Option<EntityId> = None;
+        let mut open_colony: Option<EntityId> = None;
+        let mut open_industry_sys: Option<EntityId> = None;
         let mut open_fleet = false;
 
         // Resolve fog to owned flags before UI mutably borrows self.
@@ -374,6 +382,9 @@ impl HeliosApp {
                                         if ui.button("Open Body").clicked() {
                                             open_body = Some(bid);
                                         }
+                                        if ui.button("Colony").clicked() {
+                                            open_colony = Some(bid);
+                                        }
                                     });
                                 }
                             }
@@ -434,6 +445,9 @@ impl HeliosApp {
                             }
                             ui.separator();
                             ui.horizontal(|ui| {
+                                if ui.button("Industry…").clicked() {
+                                    open_industry_sys = Some(id);
+                                }
                                 if ui.button("Research…").clicked() {
                                     self.research_open = true;
                                 }
@@ -453,6 +467,12 @@ impl HeliosApp {
         }
         if let Some(sid) = open_ship {
             self.open_ships.insert(sid);
+        }
+        if let Some(bid) = open_colony {
+            self.open_colonies.insert(bid);
+        }
+        if let Some(sid) = open_industry_sys {
+            self.open_industry.insert(sid);
         }
         if open_fleet {
             self.fleet_open = true;
@@ -537,11 +557,14 @@ impl HeliosApp {
                             ui.separator();
                             ui.label(
                                 RichText::new(
-                                    "(colonies/outposts: no separate types on BodyEntity yet)",
+                                    "breadcrumb stub: System → Body → Colony",
                                 )
                                 .weak()
                                 .small(),
                             );
+                            if ui.button("Open Colony…").clicked() {
+                                self.open_colonies.insert(bid);
+                            }
                         }
                         None => {
                             ui.label("Body not found on ledger.");
@@ -1360,6 +1383,26 @@ impl eframe::App for HeliosApp {
                 if ui.button("Designs").clicked() {
                     self.designs_open = true;
                 }
+                if ui.button("Industry").clicked() {
+                    if let Some(sid) = self.selected {
+                        self.open_industry.insert(sid);
+                    }
+                }
+                if ui.button("Colony").clicked() {
+                    // Open colony for first open body, else first body of selected system.
+                    let pick = self.open_bodies.iter().next().copied().or_else(|| {
+                        self.selected.and_then(|sid| {
+                            self.world
+                                .ledger()
+                                .bodies_for_system(sid)
+                                .next()
+                                .map(|(id, _)| *id)
+                        })
+                    });
+                    if let Some(bid) = pick {
+                        self.open_colonies.insert(bid);
+                    }
+                }
                 if ui.button("Tags").clicked() {
                     self.tags_open = true;
                 }
@@ -1424,6 +1467,8 @@ impl eframe::App for HeliosApp {
         self.show_ship_inspectors(ctx);
         self.show_research_inspector(ctx);
         self.show_design_inspector(ctx);
+        super::colony::show_colony_inspectors(ctx, &self.world, &mut self.open_colonies);
+        super::industry::show_industry_inspectors(ctx, &self.world, &mut self.open_industry);
         self.show_tag_colors(ctx);
         self.show_waypoints_window(ctx);
 
