@@ -14,6 +14,7 @@ use crate::entity::{
 };
 use crate::event::EventKind;
 use crate::lod::{LodHint, LodMode};
+use crate::matter;
 use crate::sky::{self, MapState};
 use crate::world::World;
 use crate::worlds;
@@ -22,6 +23,8 @@ use crate::worlds;
 pub const LONG_FEED: f64 = 400.0;
 /// Binding remainder below which Feed systems prefer StripMine / Fortify.
 pub const SHORT_FEED: f64 = 100.0;
+/// One-shot Ai StripMine drain via C `extract_state` (quantity units).
+pub const STRIP_MINE_EXTRACT: f64 = 25.0;
 /// Known fuse remaining below this fraction of `globals.fuse_length_ticks` is urgent.
 const FUSE_URGENCY_FRAC: f64 = 0.20;
 /// Finite score for uncertain / unknown fuse — never +∞.
@@ -338,6 +341,19 @@ pub fn execute_abandon_intent(
     n
 }
 
+
+/// Apply StripMine intent via C `extract_state` (Lock 8 state extractor).
+///
+/// One-shot drain of `STRIP_MINE_EXTRACT` quantity from state-owned deposits;
+/// C reaggregates binding and may arm depletion. Returns drained amount (0 if none).
+pub fn execute_strip_mine_intent(
+    world: &mut World,
+    _empire_id: EntityId,
+    system_id: EntityId,
+) -> f64 {
+    matter::extract_state(world, system_id, STRIP_MINE_EXTRACT).unwrap_or(0.0)
+}
+
 pub fn try_emit_order(
     world: &mut World,
     empire_id: EntityId,
@@ -408,6 +424,12 @@ pub fn try_emit_order(
     if matches!(intent, OrderIntent::Abandon) && matches!(source, OrderSource::Ai) {
         if let Some(sys) = target_ref {
             let _ = execute_abandon_intent(world, empire_id, sys);
+        }
+    }
+    // Ai StripMine → C extract_state one-shot drain.
+    if matches!(intent, OrderIntent::StripMine) && matches!(source, OrderSource::Ai) {
+        if let Some(sys) = target_ref {
+            let _ = execute_strip_mine_intent(world, empire_id, sys);
         }
     }
     Ok(Some(id))
@@ -831,7 +853,6 @@ mod minds_tests {
     use super::*;
     use crate::entity::{EmpireEntity, OrderStatus};
     use crate::globals::Globals;
-    use crate::matter;
     use crate::operator::Operator;
 
     #[test]
@@ -1208,8 +1229,6 @@ mod minds_tests {
     }
 
     #[test]
-
-    #[test]
     fn knowledge_path_victim_auto_know_own_home() {
         let mut w = World::new(70);
         let empire = *w.ledger.empires().next().unwrap().0;
@@ -1518,8 +1537,6 @@ mod minds_tests {
     }
 
     #[test]
-
-    #[test]
     fn ai_evacuate_clears_body_pops() {
         let mut w = World::new(110);
         let empire = *w.ledger.empires().next().unwrap().0;
@@ -1720,6 +1737,54 @@ mod minds_tests {
             b.automation_active,
             "Abandon must leave C abandoned automation running"
         );
+    }
+
+
+    #[test]
+    fn ai_strip_mine_extracts_state() {
+        let mut w = World::new(140);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let floor = w.globals.binding_floor;
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.claimed = true;
+            s.wilderness = false;
+            s.deposits.clear();
+            s.deposits.push(crate::matter::Deposit::new(
+                "stock.ore_binding",
+                100.0,
+                1.0,
+                crate::matter::ExtractorKind::State,
+            ));
+            crate::matter::reaggregate_remainder(s, floor);
+        }
+        let before = w.ledger.get(sys).unwrap().binding_remainder;
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::StripMine,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("strip mine order");
+        assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::StripMine);
+        let after = w.ledger.get(sys).unwrap().binding_remainder;
+        assert!(
+            after < before,
+            "StripMine should drain state deposits (before={before} after={after})"
+        );
+        let qty: f64 = w
+            .ledger
+            .get(sys)
+            .unwrap()
+            .deposits
+            .iter()
+            .filter(|d| d.extractor == crate::matter::ExtractorKind::State)
+            .map(|d| d.quantity)
+            .sum();
+        assert!((qty - 75.0).abs() < 1e-6, "100-25=75 left, got {qty}");
     }
 
     #[test]
