@@ -102,6 +102,10 @@ pub enum ViolenceError {
     InsufficientAmmo {
         ship_id: EntityId,
     },
+    /// Mercenary/survey contract missing, wrong kind, or already ended.
+    ContractInactive {
+        contract_id: EntityId,
+    },
 }
 
 /// High-rate Salt EnvLayers delta (stub constants).
@@ -392,6 +396,49 @@ pub fn apply_hull_damage(
 ///
 /// Real ammo consumption via F [`fire_kinetic`] / [`spend_magazine`] — not a stub.
 /// Fails before layer writes if the firer cannot fire (no weapon, empty mag, wrecked).
+
+/// Resolve a MercenaryHire strike: client (`contract.a`) is the chronicle/standing actor;
+/// hiree ship fires and spends magazine via [`strike_fire_ship`].
+pub fn fulfill_mercenary_hire(
+    world: &mut World,
+    contract_id: EntityId,
+    victim: EmpireId,
+    system: EntityId,
+    body_id: EntityId,
+    kind: StrikeKind,
+    delta: EnvLayers,
+    firer_ship_id: EntityId,
+    ammo_id: &str,
+) -> Result<(ViolenceOutcome, f64), ViolenceError> {
+    let mut client: Option<EmpireId> = None;
+    for contact in world.contact.empires.values() {
+        if let Some(con) = contact.contracts.iter().find(|c| c.id == contract_id) {
+            if con.defaulted
+                || con.end_tick.is_some()
+                || con.kind != crate::contact::ContractKind::MercenaryHire
+            {
+                return Err(ViolenceError::ContractInactive { contract_id });
+            }
+            client = Some(con.a);
+            break;
+        }
+    }
+    let Some(actor) = client else {
+        return Err(ViolenceError::ContractInactive { contract_id });
+    };
+    strike_fire_ship(
+        world,
+        actor,
+        victim,
+        system,
+        body_id,
+        kind,
+        delta,
+        firer_ship_id,
+        ammo_id,
+    )
+}
+
 pub fn strike_fire_ship(
     world: &mut World,
     actor: EmpireId,
@@ -812,6 +859,77 @@ mod tests {
         .unwrap_err();
         assert_eq!(err, ViolenceError::InsufficientAmmo { ship_id });
         assert_eq!(w.log().events().len(), before_events);
+    }
+
+
+    #[test]
+    fn mercenary_hire_strike_uses_client_actor() {
+        use crate::contact::{sign_contract, ContractKind};
+        use crate::hulls::{load_magazine, make_design, spawn_instance};
+        use crate::politics::STANDING_VIOLENCE_VICTIM;
+
+        let (mut w, _actor, victim, system, body_id) = setup_with_body(40.0);
+        let client = EmpireId(10);
+        let hiree = EmpireId(11);
+        let id = sign_contract(&mut w, client, hiree, ContractKind::MercenaryHire);
+        let design = make_design(
+            EntityId(930),
+            "merc",
+            vec![
+                "module.engine_chem".into(),
+                "module.crew_habitat".into(),
+                "module.weapon_kinetic".into(),
+            ],
+        )
+        .unwrap();
+        let ship_id = EntityId(931);
+        w.ship_designs.insert(design.id, design.clone());
+        let mut inst = spawn_instance(ship_id, &design, 5.0);
+        load_magazine(&mut inst, "ammo.kinetic", 2.0).unwrap();
+        w.ships.insert(ship_id, inst);
+        let delta = EnvLayers {
+            atmosphere_pressure: 0.0,
+            temperature: 0.0,
+            radiation: 1.0,
+            toxins_fallout: 0.0,
+            biosphere: 0.0,
+        };
+        fulfill_mercenary_hire(
+            &mut w,
+            id,
+            victim,
+            system,
+            body_id,
+            StrikeKind::OrbitalStrike,
+            delta,
+            ship_id,
+            "ammo.kinetic",
+        )
+        .unwrap();
+        // Victim standing hostility is toward the *client*, not a missing hiree path.
+        assert_eq!(w.standing.get(victim, client), -STANDING_VIOLENCE_VICTIM);
+        let freight = sign_contract(&mut w, client, hiree, ContractKind::Freight);
+        assert_eq!(
+            fulfill_mercenary_hire(
+                &mut w,
+                freight,
+                victim,
+                system,
+                body_id,
+                StrikeKind::OrbitalStrike,
+                EnvLayers {
+                    atmosphere_pressure: 0.0,
+                    temperature: 0.0,
+                    radiation: 1.0,
+                    toxins_fallout: 0.0,
+                    biosphere: 0.0,
+                },
+                ship_id,
+                "ammo.kinetic",
+            )
+            .unwrap_err(),
+            ViolenceError::ContractInactive { contract_id: freight }
+        );
     }
 
 }

@@ -64,7 +64,7 @@ pub use sensors::{
     SENSOR_RANGE_STUB,
 };
 pub use violence::{
-    apply_hull_damage, salt_layer_delta, salt_world, strike_fire_ship, strike_layers, strike_with_ship, StrikeKind,
+    apply_hull_damage, salt_layer_delta, salt_world, fulfill_mercenary_hire, strike_fire_ship, strike_layers, strike_with_ship, StrikeKind,
     ViolenceError, ViolenceOutcome, KO_SEVERITY_THRESHOLD, SALT_BIOSPHERE_DELTA,
     SALT_RADIATION_DELTA, SALT_SEVERITY, SALT_TEMPERATURE_DELTA, SALT_TOXINS_DELTA,
 };
