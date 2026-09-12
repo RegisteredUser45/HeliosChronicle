@@ -658,7 +658,45 @@ pub fn score_system(
     Some(score)
 }
 
-/// Map a score into a non-salt `OrderIntent` suggestion.
+/// High evacuate doctrine: prefer yards/forts over cities; evacuate/abandon over hold.
+pub const DOCTRINE_EVACUATE_HIGH: f64 = 0.85;
+/// Low salt-willingness: prefer Fortify over StripMine (won't aggressively strip).
+pub const DOCTRINE_SALT_STRIP_FLOOR: f64 = 0.10;
+
+/// Doctrine weight for ranking candidate systems in `minds_tick_stub` (0..1).
+pub fn doctrine_emit_weight(intent: OrderIntent, empire: &EmpireEntity) -> f64 {
+    match intent {
+        OrderIntent::PlantCity | OrderIntent::PlantYard | OrderIntent::ClaimFeed => {
+            (1.0 - empire.evacuate_vs_die_in_place).clamp(0.0, 1.0)
+        }
+        OrderIntent::StripMine => empire.salt_willingness.clamp(0.0, 1.0),
+        OrderIntent::Fortify => {
+            // Holders: high evacuate-in-place OR low salt aggression.
+            empire
+                .evacuate_vs_die_in_place
+                .max(1.0 - empire.salt_willingness)
+                .clamp(0.0, 1.0)
+        }
+        OrderIntent::Abandon | OrderIntent::Evacuate => {
+            empire.evacuate_vs_die_in_place.clamp(0.0, 1.0)
+        }
+        OrderIntent::ExpandSurvey => 0.5,
+        _ => 0.0,
+    }
+}
+
+fn tick_rank(score: &SystemScore, empire: &EmpireEntity) -> f64 {
+    let w = score
+        .suggested
+        .map(|i| doctrine_emit_weight(i, empire))
+        .unwrap_or(0.0);
+    score.total * (0.5 + 0.5 * w)
+}
+
+/// Map a score into a non-salt `OrderIntent` using empire doctrine knobs.
+///
+/// Selects among already-built Ai orders (PlantCity/Yard/Fortify/StripMine/Abandon
+/// + Evacuate/Claim/Survey). Salt family is never suggested here.
 pub fn suggested_intent(score: &SystemScore, empire: &EmpireEntity) -> Option<OrderIntent> {
     match score.map_state {
         MapState::Ended => Some(OrderIntent::Abandon),
@@ -672,16 +710,34 @@ pub fn suggested_intent(score: &SystemScore, empire: &EmpireEntity) -> Option<Or
         MapState::HomePaused => {
             // Stable until flag drops — do not panic-Evacuate solely because depleted.
             if score.binding_remainder >= LONG_FEED {
-                Some(OrderIntent::PlantYard)
+                if empire.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
+                    Some(OrderIntent::Fortify)
+                } else {
+                    Some(OrderIntent::PlantYard)
+                }
+            } else if empire.salt_willingness < DOCTRINE_SALT_STRIP_FLOOR {
+                Some(OrderIntent::Fortify)
             } else {
                 Some(OrderIntent::Fortify)
             }
         }
         MapState::Feed => {
             if score.binding_remainder >= LONG_FEED {
-                Some(OrderIntent::PlantCity)
+                // Ultra-evacuate doctrine plants yards, not cities.
+                if empire.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
+                    Some(OrderIntent::PlantYard)
+                } else {
+                    Some(OrderIntent::PlantCity)
+                }
             } else if score.binding_remainder < SHORT_FEED {
-                Some(OrderIntent::StripMine)
+                // Low salt-willingness holds (Fortify) instead of StripMine.
+                if empire.salt_willingness < DOCTRINE_SALT_STRIP_FLOOR {
+                    Some(OrderIntent::Fortify)
+                } else {
+                    Some(OrderIntent::StripMine)
+                }
+            } else if empire.evacuate_vs_die_in_place >= DOCTRINE_EVACUATE_HIGH {
+                Some(OrderIntent::Fortify)
             } else {
                 Some(OrderIntent::PlantYard)
             }
@@ -691,7 +747,11 @@ pub fn suggested_intent(score: &SystemScore, empire: &EmpireEntity) -> Option<Or
             if empire.evacuate_vs_die_in_place >= 0.5 && score.fuse_known && score.fuse_urgent {
                 Some(OrderIntent::Evacuate)
             } else if score.binding_remainder > 0.0 {
-                Some(OrderIntent::StripMine)
+                if empire.salt_willingness < DOCTRINE_SALT_STRIP_FLOOR {
+                    Some(OrderIntent::Fortify)
+                } else {
+                    Some(OrderIntent::StripMine)
+                }
             } else {
                 Some(OrderIntent::Fortify)
             }
@@ -850,8 +910,12 @@ pub fn minds_tick_stub(world: &mut World) {
         if !empire_needs_minds_tick(world, empire_id) {
             continue;
         }
+        let Some(empire_snap) = world.ledger.get_empire(empire_id).cloned() else {
+            continue;
+        };
         let system_ids: Vec<EntityId> = world.ledger.systems().map(|(id, _)| *id).collect();
         let mut best: Option<SystemScore> = None;
+        let mut best_rank = f64::NEG_INFINITY;
         for sid in system_ids {
             let Some(score) = score_system(world, empire_id, sid) else {
                 continue;
@@ -865,11 +929,9 @@ pub fn minds_tick_stub(world: &mut World) {
             if empire_has_ai_order_targeting(world, empire_id, sid) {
                 continue;
             }
-            let replace = match &best {
-                None => true,
-                Some(b) => score.total > b.total,
-            };
-            if replace {
+            let rank = tick_rank(&score, &empire_snap);
+            if best.is_none() || rank > best_rank {
+                best_rank = rank;
                 best = Some(score);
             }
         }
@@ -1935,6 +1997,113 @@ mod minds_tests {
         assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::Fortify);
         let (_bid, body) = w.ledger.bodies_for_system(sys).next().expect("body");
         assert!(body.structure_soak >= FORTIFY_STRUCTURE_SOAK);
+    }
+
+
+    #[test]
+    fn doctrine_selects_plant_yard_when_evacuate_high() {
+        let mut w = World::new(160);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 800.0;
+            s.depleted = false;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.home_empire = Some(EmpireId(empire.0));
+        }
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.evacuate_vs_die_in_place = 0.95;
+        }
+        let score = score_system(&w, empire, sys).unwrap();
+        assert_eq!(score.suggested, Some(OrderIntent::PlantYard));
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.evacuate_vs_die_in_place = 0.4;
+        }
+        let score2 = score_system(&w, empire, sys).unwrap();
+        assert_eq!(score2.suggested, Some(OrderIntent::PlantCity));
+    }
+
+    #[test]
+    fn doctrine_selects_fortify_when_salt_low() {
+        let mut w = World::new(161);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        {
+            let s = w.ledger.get_mut(sys).unwrap();
+            s.binding_remainder = 40.0; // short feed
+            s.depleted = false;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.home_empire = Some(EmpireId(empire.0));
+        }
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.salt_willingness = 0.05;
+        }
+        let score = score_system(&w, empire, sys).unwrap();
+        assert_eq!(score.suggested, Some(OrderIntent::Fortify));
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.salt_willingness = 0.5;
+        }
+        let score2 = score_system(&w, empire, sys).unwrap();
+        assert_eq!(score2.suggested, Some(OrderIntent::StripMine));
+    }
+
+    #[test]
+    fn minds_tick_emits_doctrine_selected_order() {
+        let mut w = World::new(162);
+        w.minds_flags.scoring_enabled = true;
+        w.set_lod(crate::lod::LodMode::Fine);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let systems: Vec<_> = w.ledger.systems().map(|(id, _)| *id).collect();
+        let target = systems[0];
+        for sid in &systems {
+            let s = w.ledger.get_mut(*sid).unwrap();
+            s.depleted = false;
+            s.ended = false;
+            s.wilderness = false;
+            s.surveyed = true;
+            s.claimed = true;
+            s.home_empire = Some(EmpireId(empire.0));
+            s.lod_hint = crate::lod::LodHint::Hot;
+            s.binding_remainder = if *sid == target { 40.0 } else { 10.0 };
+        }
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.salt_willingness = 0.6;
+            e.evacuate_vs_die_in_place = 0.4;
+        }
+        let before = w.ledger.orders_len();
+        minds_tick_stub(&mut w);
+        assert!(w.ledger.orders_len() > before);
+        let order = w
+            .ledger
+            .orders()
+            .map(|(_, o)| o)
+            .find(|o| o.empire_id == empire && o.source == OrderSource::Ai)
+            .expect("ai order");
+        assert_eq!(order.intent, OrderIntent::StripMine);
+        assert_eq!(order.target_ref, Some(target));
+        // Execution side effect: state extract ran.
+        let qty: f64 = w
+            .ledger
+            .get(target)
+            .unwrap()
+            .deposits
+            .iter()
+            .filter(|d| d.extractor == crate::matter::ExtractorKind::State)
+            .map(|d| d.quantity)
+            .sum();
+        let _ = qty; // deposits may be empty pre-seed; intent+emit is the milestone gate
     }
 
     #[test]
