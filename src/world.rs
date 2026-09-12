@@ -91,28 +91,24 @@ impl World {
                 .append(0, EventKind::EmpireSpawned { empire: eid });
         }
 
-        // Seed surface: deterministic initial systems from RNG.
+        // Lock 6: catalog spawn (full binding table + deposits), not a rolled remainder.
         let n = 2 + (world.rng_u64() % 3); // 2..4 systems
-        for _ in 0..n {
-            let id = world.ledger.spawn_system();
-            // Vary binding remainder deterministically.
-            let rem = 500.0 + (world.rng_u64() % 1000) as f64;
-            let hot_roll = world.rng_u64() % 5;
-            if let Some(sys) = world.ledger.get_mut(id) {
-                sys.binding_remainder = rem;
-                if hot_roll == 0 {
-                    sys.lod_hint = crate::lod::LodHint::Hot;
-                }
-            }
-            world
-                .log
-                .append(0, EventKind::Spawn { system: id });
-            // Phase D: one stub body per seeded system
-            let _body = world.ledger.spawn_body(id);
-        }
+        world.seed_initial_catalog_systems(n);
 
         world.recompute_outcome_hash();
         world
+    }
+
+
+    /// Lock 6: seed day-one systems via existing B/C catalog spawn APIs.
+    ///
+    /// Remainder comes from deposits (`seed_deposits_from_binding_stocks`),
+    /// not a rolled orphan number.
+    pub fn seed_initial_catalog_systems(&mut self, count: u64) {
+        for _ in 0..count {
+            let id = sky::spawn_system_with_catalog(self, false);
+            let _body = self.ledger.spawn_body(id);
+        }
     }
 
     /// Mark a system Hot and stamp `hot_until` from the default TTL.
@@ -399,5 +395,51 @@ impl World {
     /// Phase I: same-tick capital re-score hook after HomeFlagClear.
     pub fn handle_home_flag_clear(&mut self, system_id: crate::entity::EntityId) {
         crate::minds::on_home_flag_clear(self, system_id);
+    }
+}
+
+
+#[cfg(test)]
+mod lock6_seed_tests {
+    use super::*;
+
+    #[test]
+    fn new_seeds_catalog_deposits_matching_remainder() {
+        let w = World::new(7);
+        let spawn_ids = crate::cosmology::embedded_catalog().spawn_stock_ids();
+        let mut n = 0usize;
+        for (_, sys) in w.ledger.systems() {
+            n += 1;
+            assert!(
+                !sys.deposits.is_empty(),
+                "Lock 6: seeded system {} must have catalog deposits",
+                sys.id
+            );
+            for sid in &spawn_ids {
+                assert!(
+                    sys.binding_stocks.contains_key(*sid),
+                    "Lock 6: missing spawn-table stock {sid} on {}",
+                    sys.id
+                );
+            }
+            let rem = matter::compute_binding_remainder(&sys.deposits, w.globals.binding_floor);
+            assert!(
+                (sys.binding_remainder - rem).abs() < 1e-9,
+                "remainder must follow deposits, not a rolled orphan; got {} vs {rem}",
+                sys.binding_remainder
+            );
+        }
+        assert!(n >= 2 && n <= 4, "seed surface count {n}");
+    }
+
+    #[test]
+    fn seed_initial_catalog_systems_adds_one() {
+        let mut w = World::new(9);
+        let before = w.ledger.systems().count();
+        w.seed_initial_catalog_systems(1);
+        assert_eq!(w.ledger.systems().count(), before + 1);
+        let id = *w.ledger.systems().last().unwrap().0;
+        let sys = w.ledger.get(id).unwrap();
+        assert!(!sys.deposits.is_empty());
     }
 }
