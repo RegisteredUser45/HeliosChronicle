@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::entity::{EmpireId, EntityId};
 use crate::event::EventKind;
-use crate::lod::LodHint;
+use crate::lod::{hot_until_tick, LodHint, DEFAULT_HOT_TTL_TICKS};
 use crate::politics::apply_event_for_standing;
 use crate::world::World;
 
@@ -144,8 +144,10 @@ impl EmpireContactStore {
 
 /// Lock 10: Contact/Violence push fine-hot to Kernel for involved systems.
 pub fn push_fine_hot(world: &mut World, system_id: EntityId) {
+    let now = world.master_tick();
     if let Some(sys) = world.ledger.get_mut(system_id) {
         sys.lod_hint = LodHint::Hot;
+        sys.hot_until = Some(hot_until_tick(now, DEFAULT_HOT_TTL_TICKS));
     }
     world.recompute_outcome_hash();
 }
@@ -798,6 +800,21 @@ mod tests {
         // Wrong kind rejected.
         let freight = sign_contract(&mut w, a, b, ContractKind::Freight);
         assert!(fulfill_salvage_rights(&mut w, freight, system, "nope").is_none());
+    }
+
+
+    #[test]
+    fn push_fine_hot_stamps_ttl() {
+        let mut w = World::new(110);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let now = w.master_tick();
+        push_fine_hot(&mut w, system);
+        let sys = w.ledger().get(system).unwrap();
+        assert_eq!(sys.lod_hint, crate::lod::LodHint::Hot);
+        assert_eq!(
+            sys.hot_until,
+            Some(crate::lod::hot_until_tick(now, crate::lod::DEFAULT_HOT_TTL_TICKS))
+        );
     }
 
 }

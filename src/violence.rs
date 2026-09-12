@@ -410,18 +410,29 @@ pub fn strike_fire_ship(
             ship_id: firer_ship_id,
         })?
         .design_id;
-    let design = world
-        .ship_designs
-        .get(&design_id)
-        .cloned()
-        .ok_or(ViolenceError::DesignNotFound { design_id })?;
+    // Scalar path (same bar as try_move_ship): no ShipDesign clone.
+    let has_weapon = {
+        let d = world
+            .ship_designs
+            .get(&design_id)
+            .ok_or(ViolenceError::DesignNotFound { design_id })?;
+        d.modules.iter().any(|m| m == "module.weapon_kinetic")
+    };
     let ship = world
         .ships
         .get_mut(&firer_ship_id)
         .ok_or(ViolenceError::ShipNotFound {
             ship_id: firer_ship_id,
         })?;
-    let ammo_left = crate::hulls::fire_kinetic(&design, ship, ammo_id).map_err(|_| {
+    let can = has_weapon
+        && ship.magazines.get(ammo_id).copied().unwrap_or(0.0) > 0.0
+        && ship.damage < 1.0;
+    if !can {
+        return Err(ViolenceError::InsufficientAmmo {
+            ship_id: firer_ship_id,
+        });
+    }
+    let ammo_left = crate::hulls::spend_magazine(ship, ammo_id, 1.0).map_err(|_| {
         ViolenceError::InsufficientAmmo {
             ship_id: firer_ship_id,
         }
