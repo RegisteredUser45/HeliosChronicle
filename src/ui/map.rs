@@ -8,6 +8,7 @@ use crate::sky::{self, MapState};
 use crate::world::World;
 
 use super::fog;
+use super::waypoints::Waypoint;
 
 /// Screen-space camera over world (x, y) coordinates.
 #[derive(Debug, Clone)]
@@ -97,7 +98,24 @@ pub fn ensure_map_layout(world: &mut World) {
     }
 }
 
-/// Draw jump graph + systems; returns click selection (nearest system under cursor).
+/// Result of a map interaction (system select or waypoint drop).
+#[derive(Debug, Clone, Copy)]
+pub enum MapAction {
+    SelectSystem(EntityId),
+    /// World-space position for a new waypoint pin.
+    PlaceWaypoint { x: f32, y: f32 },
+}
+
+/// Optional chrome passed into the map painter (tag colors + waypoints).
+pub struct MapChrome<'a> {
+    pub waypoints: &'a [Waypoint],
+    /// When true, primary click on empty space places a waypoint.
+    pub place_mode: bool,
+    /// Label color for a known system (e.g. home-empire tag); `None` → gray.
+    pub system_name_color: Option<&'a dyn Fn(EntityId) -> Color32>,
+}
+
+/// Draw jump graph + systems + waypoints; returns click selection / place.
 ///
 /// `fog`: `None` = Operator (all) — full ledger colors. `Some` = Empire viewpoint —
 /// systems absent from `known_systems` draw as unknown placeholders (no map_state /
@@ -108,7 +126,8 @@ pub fn draw_map(
     camera: &mut MapCamera,
     selected: Option<EntityId>,
     fog: Option<&FogState>,
-) -> (Response, Option<EntityId>) {
+    chrome: MapChrome<'_>,
+) -> (Response, Option<MapAction>) {
     let desired = Vec2::new(ui.available_width(), ui.available_height().max(240.0));
     let (response, painter) = ui.allocate_painter(desired, Sense::click_and_drag());
     let rect = response.rect;
@@ -198,16 +217,50 @@ pub fn draw_map(
         if selected == Some(*id) {
             painter.circle_stroke(screen, radius + 3.0, Stroke::new(2.0_f32, Color32::WHITE));
         }
+        let label_color = if *known {
+            chrome
+                .system_name_color
+                .map(|f| f(*id))
+                .unwrap_or(Color32::from_gray(200))
+        } else {
+            Color32::from_gray(120)
+        };
         painter.text(
             screen + Vec2::new(radius + 2.0, -radius),
             egui::Align2::LEFT_BOTTOM,
             label,
             egui::FontId::proportional(11.0),
-            if *known {
-                Color32::from_gray(200)
-            } else {
-                Color32::from_gray(120)
-            },
+            label_color,
+        );
+    }
+
+    // Waypoints (pins on the glass — persist across viewpoint).
+    let wp_r = (5.0 * camera.zoom.sqrt()).clamp(3.5, 10.0);
+    for wp in chrome.waypoints {
+        let wpos = Pos2::new(wp.x, wp.y);
+        let screen = camera.world_to_screen(wpos, rect_center);
+        if !rect.expand(24.0).contains(screen) {
+            continue;
+        }
+        // Diamond pin
+        let d = wp_r;
+        let diamond = [
+            Pos2::new(screen.x, screen.y - d),
+            Pos2::new(screen.x + d, screen.y),
+            Pos2::new(screen.x, screen.y + d),
+            Pos2::new(screen.x - d, screen.y),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            diamond.to_vec(),
+            wp.color,
+            Stroke::new(1.0, Color32::WHITE),
+        ));
+        painter.text(
+            screen + Vec2::new(d + 2.0, -d),
+            egui::Align2::LEFT_BOTTOM,
+            &wp.name,
+            egui::FontId::proportional(11.0),
+            wp.color,
         );
     }
 
@@ -241,11 +294,39 @@ pub fn draw_map(
             egui::FontId::proportional(11.0),
             Color32::from_gray(180),
         );
+        ly += 14.0;
+    }
+    // Waypoint legend swatch
+    {
+        let c = Color32::from_rgb(220, 200, 80);
+        let d = 4.0;
+        let o = Pos2::new(rect.left() + 14.0, ly);
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                Pos2::new(o.x, o.y - d),
+                Pos2::new(o.x + d, o.y),
+                Pos2::new(o.x, o.y + d),
+                Pos2::new(o.x - d, o.y),
+            ],
+            c,
+            Stroke::NONE,
+        ));
+        painter.text(
+            Pos2::new(rect.left() + 24.0, ly),
+            egui::Align2::LEFT_CENTER,
+            "Waypoint",
+            egui::FontId::proportional(11.0),
+            Color32::from_gray(180),
+        );
     }
 
-    let mut clicked = None;
-    if response.clicked() {
-        if let Some(pos) = response.interact_pointer_pos() {
+    let mut action = None;
+    let pointer = response.interact_pointer_pos();
+    let primary = response.clicked();
+    let secondary = response.secondary_clicked();
+
+    if primary || secondary {
+        if let Some(pos) = pointer {
             let world_click = camera.screen_to_world(pos, rect_center);
             let mut best: Option<(EntityId, f32)> = None;
             let thresh = (radius + 8.0) / camera.zoom;
@@ -255,9 +336,18 @@ pub fn draw_map(
                     best = Some((*id, d));
                 }
             }
-            clicked = best.map(|(id, _)| id);
+            if let Some((id, _)) = best {
+                if primary {
+                    action = Some(MapAction::SelectSystem(id));
+                }
+            } else if secondary || (primary && chrome.place_mode) {
+                action = Some(MapAction::PlaceWaypoint {
+                    x: world_click.x,
+                    y: world_click.y,
+                });
+            }
         }
     }
 
-    (response, clicked)
+    (response, action)
 }

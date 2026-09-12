@@ -12,7 +12,9 @@ use crate::sky;
 use crate::world::World;
 
 use super::fog::{self, SystemKnowledge};
-use super::map::{self, MapCamera};
+use super::map::{self, MapAction, MapCamera, MapChrome};
+use super::tags::{self, TagColors, TagKind};
+use super::waypoints::WaypointStore;
 
 const EVENT_STRIP_MAX: usize = 80;
 
@@ -52,6 +54,16 @@ pub struct HeliosApp {
     /// Cached stub tech book — avoid per-frame TechLine/TechSegment rebuild clones.
     tech_lines: Vec<TechLine>,
     tech_segments: Vec<TechSegment>,
+    /// Operator tag colors (empire / fleet / body) — UI chrome, not ledger.
+    tag_colors: TagColors,
+    /// Named waypoints on the map — persist across viewpoint swaps.
+    waypoints: WaypointStore,
+    tags_open: bool,
+    waypoints_open: bool,
+    /// Button+click place mode for waypoints (right-click also places).
+    place_waypoint_mode: bool,
+    /// Selected waypoint id in the Waypoints window editor.
+    selected_waypoint: Option<u64>,
 }
 
 impl HeliosApp {
@@ -99,6 +111,12 @@ impl HeliosApp {
             selected_design: None,
             tech_lines,
             tech_segments,
+            tag_colors: TagColors::new(),
+            waypoints: WaypointStore::new(),
+            tags_open: false,
+            waypoints_open: false,
+            place_waypoint_mode: false,
+            selected_waypoint: None,
         }
     }
 
@@ -146,6 +164,43 @@ impl HeliosApp {
         fog::fog_of(&self.world, fog::as_empire_id(eid))
     }
 
+    /// Empire display color (override or hash default).
+    fn empire_color(&self, empire_id: EntityId) -> Color32 {
+        self.tag_colors.resolve(TagKind::Empire, empire_id)
+    }
+
+    /// Color for a system's map/header name: body/fleet overrides unused;
+    /// prefer home empire tag when present.
+    fn system_name_color(&self, system_id: EntityId) -> Color32 {
+        if let Some(sys) = self.world.ledger().get(system_id) {
+            if let Some(emp) = sys.home_empire {
+                return self.empire_color(EntityId(emp.0));
+            }
+        }
+        Color32::from_gray(200)
+    }
+
+    fn body_header_color(&self, body_id: EntityId) -> Color32 {
+        if let Some(c) = self.tag_colors.get(TagKind::Body, body_id) {
+            return c;
+        }
+        // Fall back to parent system's home empire color when known.
+        if let Some(body) = self.world.ledger().get_body(body_id) {
+            if let Some(sys) = self.world.ledger().get(body.system) {
+                if let Some(emp) = sys.home_empire {
+                    return self.empire_color(EntityId(emp.0));
+                }
+            }
+        }
+        TagColors::hash_color(body_id)
+    }
+
+    fn fleet_header_color(&self, ship_id: EntityId) -> Color32 {
+        self.tag_colors
+            .get(TagKind::Fleet, ship_id)
+            .unwrap_or_else(|| TagColors::hash_color(ship_id))
+    }
+
     /// Issue 11 lean moment: kind discriminant name.
     fn kind_name(kind: &EventKind) -> String {
         let dbg = format!("{kind:?}");
@@ -188,9 +243,12 @@ impl HeliosApp {
             return;
         }
         let mut open = true;
-        let title = match self.selected {
-            Some(id) => format!("System inspector — {id}"),
-            None => "System inspector".into(),
+        let (title, title_color) = match self.selected {
+            Some(id) => (
+                format!("System inspector — {id}"),
+                self.system_name_color(id),
+            ),
+            None => ("System inspector".into(), Color32::from_gray(220)),
         };
         let mut open_body: Option<EntityId> = None;
         let mut open_ship: Option<EntityId> = None;
@@ -212,7 +270,7 @@ impl HeliosApp {
             Vec::new()
         };
 
-        egui::Window::new(title)
+        egui::Window::new(RichText::new(title).color(title_color))
             .id(egui::Id::new("helios_system_inspector"))
             .open(&mut open)
             .default_width(340.0)
@@ -415,7 +473,8 @@ impl HeliosApp {
                 .get_body(bid)
                 .map(|b| b.system);
             let title = format!("Body inspector — {bid}");
-            egui::Window::new(title)
+            let title_color = self.body_header_color(bid);
+            egui::Window::new(RichText::new(title).color(title_color))
                 .id(egui::Id::new(("helios_body", bid.0)))
                 .open(&mut open)
                 .default_width(360.0)
@@ -569,9 +628,10 @@ impl HeliosApp {
         for sid in ids {
             let mut open = true;
             let title = format!("Ship inspector — {sid}");
+            let title_color = self.fleet_header_color(sid);
             // Display from live refs / scalars — no per-frame ShipInstance/ShipDesign clones.
             let world = &self.world;
-            egui::Window::new(title)
+            egui::Window::new(RichText::new(title).color(title_color))
                 .id(egui::Id::new(("helios_ship", sid.0)))
                 .open(&mut open)
                 .default_width(380.0)
@@ -979,6 +1039,223 @@ impl HeliosApp {
             self.designs_open = false;
         }
     }
+
+    fn show_tag_colors(&mut self, ctx: &egui::Context) {
+        if !self.tags_open {
+            return;
+        }
+        let mut open = true;
+        // Snapshot empire ids/names for the roster (avoid borrow fights).
+        let empires: Vec<(EntityId, String)> = self
+            .world
+            .ledger()
+            .empires()
+            .map(|(id, e)| {
+                (
+                    *id,
+                    e.name.clone().unwrap_or_else(|| id.to_string()),
+                )
+            })
+            .collect();
+        let bodies: Vec<EntityId> = self.open_bodies.iter().copied().collect();
+        let ships: Vec<EntityId> = self.open_ships.iter().copied().collect();
+
+        egui::Window::new("Tag colors")
+            .id(egui::Id::new("helios_tag_colors"))
+            .open(&mut open)
+            .default_width(380.0)
+            .default_height(320.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Operator chrome — color wheel for empires / selected fleets & bodies. Defaults hash empire id.",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.separator();
+                ScrollArea::vertical().show(ui, |ui| {
+                    ui.label(RichText::new("Empires").strong());
+                    for (eid, name) in &empires {
+                        ui.horizontal(|ui| {
+                            let mut c = self.tag_colors.resolve(TagKind::Empire, *eid);
+                            let before = c;
+                            tags::color_wheel_button(ui, &mut c);
+                            if c != before {
+                                self.tag_colors.set(TagKind::Empire, *eid, c);
+                            }
+                            ui.label(RichText::new(name).color(c));
+                            ui.monospace(format!("({eid})"));
+                            if self.tag_colors.get(TagKind::Empire, *eid).is_some() {
+                                if ui.small_button("Reset").clicked() {
+                                    self.tag_colors.clear(TagKind::Empire, *eid);
+                                }
+                            }
+                        });
+                    }
+                    if empires.is_empty() {
+                        ui.label("(no empires on ledger)");
+                    }
+
+                    ui.separator();
+                    ui.label(RichText::new("Open fleets (ships)").strong());
+                    if ships.is_empty() {
+                        ui.label(RichText::new("(open a ship inspector to tag it)").weak().small());
+                    }
+                    for sid in &ships {
+                        ui.horizontal(|ui| {
+                            let mut c = self.fleet_header_color(*sid);
+                            let before = c;
+                            tags::color_wheel_button(ui, &mut c);
+                            if c != before {
+                                self.tag_colors.set(TagKind::Fleet, *sid, c);
+                            }
+                            ui.label(RichText::new(format!("ship {sid}")).color(c));
+                            if self.tag_colors.get(TagKind::Fleet, *sid).is_some() {
+                                if ui.small_button("Reset").clicked() {
+                                    self.tag_colors.clear(TagKind::Fleet, *sid);
+                                }
+                            }
+                        });
+                    }
+
+                    ui.separator();
+                    ui.label(RichText::new("Open bodies").strong());
+                    if bodies.is_empty() {
+                        ui.label(RichText::new("(open a body inspector to tag it)").weak().small());
+                    }
+                    for bid in &bodies {
+                        ui.horizontal(|ui| {
+                            let mut c = self.body_header_color(*bid);
+                            let before = c;
+                            tags::color_wheel_button(ui, &mut c);
+                            if c != before {
+                                self.tag_colors.set(TagKind::Body, *bid, c);
+                            }
+                            ui.label(RichText::new(format!("body {bid}")).color(c));
+                            if self.tag_colors.get(TagKind::Body, *bid).is_some() {
+                                if ui.small_button("Reset").clicked() {
+                                    self.tag_colors.clear(TagKind::Body, *bid);
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+        if !open {
+            self.tags_open = false;
+        }
+    }
+
+    fn show_waypoints_window(&mut self, ctx: &egui::Context) {
+        if !self.waypoints_open {
+            return;
+        }
+        let mut open = true;
+        let mut delete_id: Option<u64> = None;
+        let mut focus_id: Option<u64> = None;
+
+        egui::Window::new("Waypoints")
+            .id(egui::Id::new("helios_waypoints"))
+            .open(&mut open)
+            .default_width(420.0)
+            .default_height(300.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Pins on the glass — right-click map (or Place mode + click). Not fleets / not binding.",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.horizontal(|ui| {
+                    let placing = self.place_waypoint_mode;
+                    if ui
+                        .selectable_label(
+                            placing,
+                            if placing {
+                                "Place mode ON"
+                            } else {
+                                "Place mode"
+                            },
+                        )
+                        .clicked()
+                    {
+                        self.place_waypoint_mode = !self.place_waypoint_mode;
+                    }
+                    ui.label(format!("{} waypoints", self.waypoints.len()));
+                });
+                ui.separator();
+
+                let ids: Vec<u64> = self.waypoints.items().iter().map(|w| w.id).collect();
+                ScrollArea::vertical().show(ui, |ui| {
+                    if self.waypoints.is_empty() {
+                        ui.label("(none — right-click the map to drop one)");
+                    }
+                    for id in ids {
+                        let selected = self.selected_waypoint == Some(id);
+                        let (mut name, mut note, mut color, x, y) = {
+                            let w = match self.waypoints.get_mut(id) {
+                                Some(w) => w,
+                                None => continue,
+                            };
+                            (w.name.clone(), w.note.clone(), w.color, w.x, w.y)
+                        };
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(selected, format!("#{id}")).clicked() {
+                                    focus_id = Some(id);
+                                }
+                                if tags::color_wheel_button(ui, &mut color).changed() {
+                                    if let Some(w) = self.waypoints.get_mut(id) {
+                                        w.color = color;
+                                    }
+                                }
+                                if ui.text_edit_singleline(&mut name).changed() {
+                                    if let Some(w) = self.waypoints.get_mut(id) {
+                                        w.name = name.clone();
+                                    }
+                                }
+                                ui.label(
+                                    RichText::new(format!("({x:.1}, {y:.1})"))
+                                        .weak()
+                                        .small(),
+                                );
+                                if ui.small_button("Go").clicked() {
+                                    self.camera.center = egui::Pos2::new(x, y);
+                                    focus_id = Some(id);
+                                }
+                                if ui.small_button("Delete").clicked() {
+                                    delete_id = Some(id);
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("note");
+                                if ui.text_edit_singleline(&mut note).changed() {
+                                    if let Some(w) = self.waypoints.get_mut(id) {
+                                        w.note = note.clone();
+                                    }
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+
+        if let Some(id) = focus_id {
+            self.selected_waypoint = Some(id);
+        }
+        if let Some(id) = delete_id {
+            self.waypoints.remove(id);
+            if self.selected_waypoint == Some(id) {
+                self.selected_waypoint = None;
+            }
+        }
+        if !open {
+            self.waypoints_open = false;
+        }
+    }
+
 }
 
 impl eframe::App for HeliosApp {
@@ -1038,7 +1315,7 @@ impl eframe::App for HeliosApp {
                     self.viewpoint = Viewpoint::Operator;
                 }
                 self.ensure_viewpoint_empire();
-                let empire_label = match self.viewpoint_empire {
+                let (empire_label, empire_color) = match self.viewpoint_empire {
                     Some(eid) => {
                         let name = self
                             .world
@@ -1046,12 +1323,15 @@ impl eframe::App for HeliosApp {
                             .get_empire(eid)
                             .and_then(|e| e.name.clone())
                             .unwrap_or_else(|| eid.to_string());
-                        format!("Empire: {name}")
+                        (format!("Empire: {name}"), self.empire_color(eid))
                     }
-                    None => "Empire: (none)".into(),
+                    None => ("Empire: (none)".into(), Color32::from_gray(200)),
                 };
                 if ui
-                    .selectable_label(self.viewpoint == Viewpoint::Empire, empire_label)
+                    .selectable_label(
+                        self.viewpoint == Viewpoint::Empire,
+                        RichText::new(empire_label).color(empire_color),
+                    )
                     .clicked()
                 {
                     self.viewpoint = Viewpoint::Empire;
@@ -1079,6 +1359,30 @@ impl eframe::App for HeliosApp {
                 }
                 if ui.button("Designs").clicked() {
                     self.designs_open = true;
+                }
+                if ui.button("Tags").clicked() {
+                    self.tags_open = true;
+                }
+                if ui.button("Waypoints").clicked() {
+                    self.waypoints_open = true;
+                }
+                let placing = self.place_waypoint_mode;
+                if ui
+                    .selectable_label(
+                        placing,
+                        if placing {
+                            "Place WP: ON"
+                        } else {
+                            "Place WP"
+                        },
+                    )
+                    .on_hover_text("Click empty map to drop a waypoint (right-click always works)")
+                    .clicked()
+                {
+                    self.place_waypoint_mode = !self.place_waypoint_mode;
+                    if self.place_waypoint_mode {
+                        self.waypoints_open = true;
+                    }
                 }
             });
         });
@@ -1120,9 +1424,13 @@ impl eframe::App for HeliosApp {
         self.show_ship_inspectors(ctx);
         self.show_research_inspector(ctx);
         self.show_design_inspector(ctx);
+        self.show_tag_colors(ctx);
+        self.show_waypoints_window(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.label("Map (pan: drag · zoom: scroll · click: inspect)");
+            ui.label(
+                "Map (pan: drag · zoom: scroll · click: inspect · right-click / Place WP: waypoint)",
+            );
             // Empire viewpoint: live contact fog ref (no clone). Operator: fog off.
             // Borrow fog from world.contact only so camera can be mutably borrowed.
             let fog = match (self.viewpoint, self.viewpoint_empire) {
@@ -1133,11 +1441,40 @@ impl eframe::App for HeliosApp {
                     .map(|c| &c.fog),
                 _ => None,
             };
-            let (_resp, clicked) =
-                map::draw_map(ui, &self.world, &mut self.camera, self.selected, fog);
-            if let Some(id) = clicked {
-                self.selected = Some(id);
-                self.inspector_open = true;
+            let place_mode = self.place_waypoint_mode;
+            // Precompute system→color map so the dyn Fn can close over owned data.
+            let mut sys_colors: std::collections::BTreeMap<u64, Color32> =
+                std::collections::BTreeMap::new();
+            for (id, sys) in self.world.ledger().systems() {
+                if let Some(emp) = sys.home_empire {
+                    sys_colors.insert(id.0, self.empire_color(EntityId(emp.0)));
+                }
+            }
+            let color_fn = |sid: EntityId| {
+                sys_colors
+                    .get(&sid.0)
+                    .copied()
+                    .unwrap_or(Color32::from_gray(200))
+            };
+            let chrome = MapChrome {
+                waypoints: self.waypoints.items(),
+                place_mode,
+                system_name_color: Some(&color_fn),
+            };
+            let (_resp, action) =
+                map::draw_map(ui, &self.world, &mut self.camera, self.selected, fog, chrome);
+            match action {
+                Some(MapAction::SelectSystem(id)) => {
+                    self.selected = Some(id);
+                    self.inspector_open = true;
+                }
+                Some(MapAction::PlaceWaypoint { x, y }) => {
+                    let id = self.waypoints.add_at(x, y);
+                    self.selected_waypoint = Some(id);
+                    self.waypoints_open = true;
+                    // Stay in place mode until toggled off.
+                }
+                None => {}
             }
         });
     }
