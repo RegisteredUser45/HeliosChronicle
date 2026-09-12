@@ -643,6 +643,58 @@ pub fn refine_ship_tier_fuel(
 }
 
 
+
+/// Commission an already-registered design at a system yard: tool (`recipe.yard_mk1`
+/// if not yet tooled) then build (`recipe.hull_plate`). DEF: designed → yard tooled → ship built.
+pub fn commission_design_at_system(
+    world: &mut World,
+    empire_id: EntityId,
+    system: EntityId,
+    design_id: EntityId,
+    fuel_qty: f64,
+) -> Result<EntityId, HullError> {
+    if !world.ship_designs.contains_key(&design_id) {
+        return Err(HullError::DesignNotFound);
+    }
+    let already = world
+        .ledger
+        .get_empire(empire_id)
+        .map(|e| e.tooled_design_ids.contains(&design_id.0))
+        .unwrap_or(false);
+    if !already {
+        tool_yard_at_system(world, empire_id, design_id, system)?;
+    }
+    build_ship_at_system(world, empire_id, design_id, system, fuel_qty)
+}
+
+/// If empire has `facility.yard` and `design_id` is not yet tooled, run `tool_yard_at_system`.
+/// Returns `Ok(true)` when newly tooled; `Ok(false)` when already tooled or yard not unlocked.
+pub fn auto_tool_design_if_yard_ready(
+    world: &mut World,
+    empire_id: EntityId,
+    design_id: EntityId,
+    system: EntityId,
+) -> Result<bool, HullError> {
+    if !world.ship_designs.contains_key(&design_id) {
+        return Err(HullError::DesignNotFound);
+    }
+    let (has_yard, already) = {
+        let empire = world.ledger.get_empire(empire_id).ok_or(HullError::EmpireNotFound)?;
+        (
+            empire_has_unlock(empire, "facility.yard"),
+            empire.tooled_design_ids.contains(&design_id.0),
+        )
+    };
+    if !has_yard {
+        return Ok(false);
+    }
+    if already {
+        return Ok(false);
+    }
+    tool_yard_at_system(world, empire_id, design_id, system)?;
+    Ok(true)
+}
+
 /// One-shot yard construction: register design, tool yard (`recipe.yard_mk1` if needed),
 /// consume `recipe.hull_plate`, spawn ship. NEW F pipeline for B/operator consumers.
 pub fn yard_build_ship(
@@ -1167,6 +1219,62 @@ mod tests {
         tool_yard(&mut w, empire, did).unwrap();
         let sid = build_ship(&mut w, empire, did, 4.0).unwrap();
         assert!((try_move_ship(&mut w, sid, 1.0).unwrap() - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn commission_design_at_system_tools_and_builds() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(201);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        let did = register_design(
+            &mut w,
+            empire,
+            "commissioned",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        // yard_mk1 (20+8) + hull_plate (8+4)
+        add_deposit(&mut w, system, Deposit::new("stock.ore_binding", 28.0, 1.0, ExtractorKind::State)).unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.silicates", 12.0, 1.0, ExtractorKind::State)).unwrap();
+        assert!(!w.ledger.get_empire(empire).unwrap().tooled_design_ids.contains(&did.0));
+        let sid = commission_design_at_system(&mut w, empire, system, did, 3.0).unwrap();
+        assert!(w.ledger.get_empire(empire).unwrap().tooled_design_ids.contains(&did.0));
+        let ship = w.ships.get(&sid).unwrap();
+        assert_eq!(ship.design_id, did);
+        assert_eq!(ship.fuel_tier, "fuel.chemical");
+        assert!((ship.fuel_qty - 3.0).abs() < 1e-9);
+        assert_eq!(w.ship_designs.get(&did).unwrap().fuel_tier, "fuel.chemical");
+    }
+
+    #[test]
+    fn auto_tool_design_if_yard_ready_tools_once() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::research::{find_segment, unlock_segment};
+        use crate::world::World;
+        let mut w = World::new(202);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        for sid in ["seg.chem_drive", "seg.tankage", "seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        let did = register_design(
+            &mut w,
+            empire,
+            "autotool",
+            vec!["module.engine_chem".into(), "module.tankage".into()],
+        )
+        .unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.ore_binding", 20.0, 1.0, ExtractorKind::State)).unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.silicates", 8.0, 1.0, ExtractorKind::State)).unwrap();
+        assert!(auto_tool_design_if_yard_ready(&mut w, empire, did, system).unwrap());
+        assert!(w.ledger.get_empire(empire).unwrap().tooled_design_ids.contains(&did.0));
+        assert!(!auto_tool_design_if_yard_ready(&mut w, empire, did, system).unwrap());
     }
 
 

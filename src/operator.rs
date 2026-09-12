@@ -709,6 +709,18 @@ impl<'a> Operator<'a> {
             .map_err(|e| OperatorError::Other(e.to_string()))
     }
 
+    /// Commission registered design: tool yard then build ship at system.
+    pub fn commission_design_at_system(
+        &mut self,
+        empire_id: EntityId,
+        system: EntityId,
+        design_id: EntityId,
+        fuel_qty: f64,
+    ) -> Result<EntityId, OperatorError> {
+        crate::hulls::commission_design_at_system(self.world, empire_id, system, design_id, fuel_qty)
+            .map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Spend ship fuel (motion burn).
     pub fn spend_ship_fuel(&mut self, ship_id: EntityId, amount: f64) -> Result<f64, OperatorError> {
         let ship = self

@@ -474,7 +474,13 @@ pub fn tick_lab_on_world(world: &mut crate::world::World, lab_id: EntityId, dt: 
         let tick = world.master_tick;
         world.log.append(tick, EventKind::SegmentResearched { empire: empire_id, segment: seg.clone() });
         // Lab completion → auto-register ShipDesign from module.* unlocks (idempotent).
-        let _ = crate::hulls::unlock_design_from_completed_segment(world, empire_id, seg);
+        let unlocked = crate::hulls::unlock_design_from_completed_segment(world, empire_id, seg);
+        // Best-effort auto-tool when lab has a site and empire already has facility.yard.
+        if let Ok(Some(design_id)) = unlocked {
+            if let Some(sys) = site {
+                let _ = crate::hulls::auto_tool_design_if_yard_ready(world, empire_id, design_id, sys);
+            }
+        }
     }
     Ok(done)
 }
@@ -663,6 +669,88 @@ mod tests {
                 .filter(|d| d.name == "design.chem_drive")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn lab_completion_auto_tools_design_when_yard_ready() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::world::World;
+        let mut w = World::new(43);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        // Empire already has facility.yard (+ industry prereqs).
+        for sid in ["seg.basic_lab", "seg.yard", "seg.tankage"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        // chem_drive gates at site: stock.volatiles + recipe.fuel_chem_refine BOM (5 volatiles).
+        // yard_mk1 BOM for auto-tool (20 ore + 8 silicates).
+        add_deposit(&mut w, system, Deposit::new("stock.volatiles", 5.0, 1.0, ExtractorKind::State)).unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.ore_binding", 20.0, 1.0, ExtractorKind::State)).unwrap();
+        add_deposit(&mut w, system, Deposit::new("stock.silicates", 8.0, 1.0, ExtractorKind::State)).unwrap();
+
+        let lab_id = w.ledger.alloc_id();
+        let mut lab = make_lab(lab_id, empire, 1.0);
+        assign_lab(&mut lab, "seg.chem_drive").unwrap();
+        set_lab_site(&mut lab, Some(system));
+        w.labs.insert(lab_id, lab);
+
+        let mut done = None;
+        let mut guard = 0;
+        while done.is_none() && guard < 10_000 {
+            done = tick_lab_on_world(&mut w, lab_id, 100).unwrap();
+            guard += 1;
+        }
+        assert_eq!(done.as_deref(), Some("seg.chem_drive"));
+        let designs: Vec<_> = w
+            .ship_designs
+            .values()
+            .filter(|d| d.name == "design.chem_drive")
+            .collect();
+        assert_eq!(designs.len(), 1);
+        let design_id = designs[0].id;
+        assert!(
+            w.ledger.get_empire(empire).unwrap().tooled_design_ids.contains(&design_id.0),
+            "design should be auto-tooled when site_system + facility.yard + yard BOM present"
+        );
+    }
+
+    #[test]
+    fn lab_completion_soft_fails_auto_tool_without_yard_bom() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::world::World;
+        let mut w = World::new(44);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let system = *w.ledger.systems().next().unwrap().0;
+        for sid in ["seg.basic_lab", "seg.yard"] {
+            unlock_segment(w.ledger.get_empire_mut(empire).unwrap(), &find_segment(sid).unwrap()).unwrap();
+        }
+        // Site gates for chem_drive met (volatiles), but NO yard_mk1 BOM → unlock + soft-fail tool.
+        add_deposit(&mut w, system, Deposit::new("stock.volatiles", 5.0, 1.0, ExtractorKind::State)).unwrap();
+
+        let lab_id = w.ledger.alloc_id();
+        let mut lab = make_lab(lab_id, empire, 1.0);
+        assign_lab(&mut lab, "seg.chem_drive").unwrap();
+        set_lab_site(&mut lab, Some(system));
+        w.labs.insert(lab_id, lab);
+
+        let mut done = None;
+        let mut guard = 0;
+        while done.is_none() && guard < 10_000 {
+            done = tick_lab_on_world(&mut w, lab_id, 100).unwrap();
+            guard += 1;
+        }
+        assert_eq!(done.as_deref(), Some("seg.chem_drive"), "lab tick must not fail when auto-tool lacks BOM");
+        let designs: Vec<_> = w
+            .ship_designs
+            .values()
+            .filter(|d| d.name == "design.chem_drive")
+            .collect();
+        assert_eq!(designs.len(), 1, "design still registered");
+        let design_id = designs[0].id;
+        assert!(
+            !w.ledger.get_empire(empire).unwrap().tooled_design_ids.contains(&design_id.0),
+            "missing yard BOM → soft-fail; design not tooled"
         );
     }
 }
