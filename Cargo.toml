@@ -2,6 +2,7 @@
 name = "helios_chronicle"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 description = "Helios Chronicle — Aurora-class space-empire simulation (Phase A kernel)"
 license = "MIT"
 default-run = "helios"
@@ -24,8 +25,8 @@ serde_json = "1"
 rand = { version = "0.8", features = ["std_rng"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "1"
-eframe = { version = "0.30", optional = true }
-egui = { version = "0.30", optional = true }
+eframe = { version = "0.28.1", optional = true, default-features = false, features = ["default_fonts", "glow", "x11"] }
+egui = { version = "0.28.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

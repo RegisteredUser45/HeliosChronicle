@@ -42,7 +42,7 @@ Instrument panel over the live ledger (STATEMENT §11). Map never goes away; pan
 cargo run --features ui --bin helios -- ui --seed 42
 ```
 
-Requires a display. Feature `ui` is **off by default** (keeps headless `cargo test --lib` free of egui). Enable with `--features ui`.
+Requires a display. Feature `ui` is **off by default** (keeps headless `cargo test --lib` free of egui). Enable with `--features ui`. Package `rust-version = "1.85"` + resolver fallback pins egui/eframe 0.28 so the window builds on rustc 1.85.
 
 ## Phase I — Minds (schema stub)
 
