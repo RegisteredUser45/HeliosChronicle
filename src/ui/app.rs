@@ -11,6 +11,7 @@ use crate::research::{self, TechLine, TechSegment};
 use crate::sky;
 use crate::world::World;
 
+use super::fog::{self, SystemKnowledge};
 use super::map::{self, MapCamera};
 
 const EVENT_STRIP_MAX: usize = 80;
@@ -29,6 +30,8 @@ pub struct HeliosApp {
     pub camera: MapCamera,
     pub selected: Option<EntityId>,
     pub viewpoint: Viewpoint,
+    /// Ledger empire id for Empire viewpoint (first empire / cycle pick).
+    pub viewpoint_empire: Option<EntityId>,
     /// Wall-clock accumulator for unpaused ticking (seconds).
     tick_accum: f32,
     inspector_open: bool,
@@ -76,6 +79,7 @@ impl HeliosApp {
             cam.zoom = (420.0_f32 / span).clamp(0.2, 4.0);
         }
         let (tech_lines, tech_segments) = research::stub_tech_book();
+        let viewpoint_empire = world.ledger().empires().next().map(|(id, _)| *id);
         Self {
             world,
             paused: true,
@@ -83,6 +87,7 @@ impl HeliosApp {
             camera: cam,
             selected: None,
             viewpoint: Viewpoint::Operator,
+            viewpoint_empire,
             tick_accum: 0.0,
             inspector_open: false,
             open_bodies: BTreeSet::new(),
@@ -99,6 +104,46 @@ impl HeliosApp {
 
     fn step(&mut self) {
         self.world.tick(self.increment.max(1));
+    }
+
+    /// Keep Empire viewpoint pointed at a live ledger empire (first if unset).
+    fn ensure_viewpoint_empire(&mut self) {
+        let current_ok = self.viewpoint_empire.is_some_and(|id| {
+            self.world.ledger().get_empire(id).is_some()
+        });
+        if current_ok {
+            return;
+        }
+        self.viewpoint_empire = self.world.ledger().empires().next().map(|(id, _)| *id);
+    }
+
+    /// Cycle `viewpoint_empire` through ledger empires (cheap, no alloc beyond scan).
+    fn cycle_viewpoint_empire(&mut self) {
+        let mut first = None;
+        let mut take_next = false;
+        let mut next = None;
+        for (id, _) in self.world.ledger().empires() {
+            if first.is_none() {
+                first = Some(*id);
+            }
+            if take_next {
+                next = Some(*id);
+                break;
+            }
+            if Some(*id) == self.viewpoint_empire {
+                take_next = true;
+            }
+        }
+        self.viewpoint_empire = next.or(first);
+    }
+
+    /// Live fog for Empire viewpoint; Operator → None (fog off).
+    fn viewpoint_fog(&self) -> Option<&crate::contact::FogState> {
+        if self.viewpoint != Viewpoint::Empire {
+            return None;
+        }
+        let eid = self.viewpoint_empire?;
+        fog::fog_of(&self.world, fog::as_empire_id(eid))
     }
 
     /// Issue 11 lean moment: kind discriminant name.
@@ -151,99 +196,195 @@ impl HeliosApp {
         let mut open_ship: Option<EntityId> = None;
         let mut open_fleet = false;
 
+        // Resolve fog to owned flags before UI mutably borrows self.
+        let fog_on = self.viewpoint == Viewpoint::Empire;
+        let knowledge = if fog_on {
+            let fog = self.viewpoint_fog();
+            self.selected.map(|sid| fog::system_knowledge(fog, sid))
+        } else {
+            None
+        };
+        let known_fleet_ids: Vec<EntityId> = if fog_on {
+            self.viewpoint_fog()
+                .map(|f| f.known_fleets.keys().copied().collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         egui::Window::new(title)
             .id(egui::Id::new("helios_system_inspector"))
             .open(&mut open)
             .default_width(340.0)
             .show(ctx, |ui| {
                 if let Some(id) = self.selected {
-                    if let Some(sys) = self.world.ledger().get(id) {
-                        ui.label(RichText::new("breadcrumb: System").weak());
-                        ui.separator();
-                        ui.monospace(format!("id:              {id}"));
-                        ui.monospace(format!("x/y:             {:.2} / {:.2}", sys.x, sys.y));
-                        ui.monospace(format!(
-                            "binding_remainder:{:.3}",
-                            sys.binding_remainder
-                        ));
-                        ui.monospace(format!("depleted:        {}", sys.depleted));
-                        ui.monospace(format!("fuse_end_tick:   {:?}", sys.fuse_end_tick));
-                        ui.monospace(format!("fuse_remaining:  {:?}", sys.fuse_remaining));
-                        let state = sky::map_state(sys);
-                        ui.monospace(format!("map_state:       {}", state.as_str()));
-                        ui.monospace(format!(
-                            "wilderness:      {}  surveyed: {}  claimed: {}",
-                            sys.wilderness, sys.surveyed, sys.claimed
-                        ));
-                        ui.monospace(format!(
-                            "home:            capital={} flag={} paused={}",
-                            sys.is_home_capital, sys.home_flag, sys.fuse_paused
-                        ));
-                        ui.monospace(format!("ended:           {}", sys.ended));
-                        ui.monospace(format!("jump_links:      {}", sys.jump_links.len()));
-                        ui.monospace(format!("lod_hint:        {:?}", sys.lod_hint));
-                    } else {
-                        ui.label("System not found on ledger.");
-                    }
+                    match knowledge {
+                        Some(SystemKnowledge::Unknown) if fog_on => {
+                            ui.label(RichText::new("breadcrumb: System").weak());
+                            ui.separator();
+                            ui.label(
+                                RichText::new("unknown — outside empire fog")
+                                    .color(Color32::from_rgb(200, 180, 100)),
+                            );
+                            ui.monospace(format!("id:              {id}"));
+                            ui.monospace("knowledge:       unknown");
+                            ui.monospace("binding_remainder: unknown");
+                            ui.monospace("fuse_end_tick:   unknown");
+                            ui.monospace("fuse_remaining:  unknown");
+                            ui.monospace("map_state:       unknown");
+                            ui.label(
+                                RichText::new("(limited rows — system not in known_systems)")
+                                    .weak()
+                                    .small(),
+                            );
+                        }
+                        _ => {
+                            let surveyed_fuse = matches!(
+                                knowledge,
+                                Some(SystemKnowledge::Known {
+                                    surveyed_fuse: true
+                                })
+                            );
+                            let show_fuse = !fog_on || surveyed_fuse;
 
-                    ui.separator();
-                    ui.label(RichText::new("Bodies in system (System → Body)").strong());
-                    let bodies: Vec<(EntityId, f64, bool)> = self
-                        .world
-                        .ledger()
-                        .bodies_for_system(id)
-                        .map(|(bid, b)| (*bid, b.pops, b.automation_active))
-                        .collect();
-                    if bodies.is_empty() {
-                        ui.label("(no bodies)");
-                    } else {
-                        for (bid, pops, auto) in bodies {
+                            if let Some(sys) = self.world.ledger().get(id) {
+                                ui.label(RichText::new("breadcrumb: System").weak());
+                                ui.separator();
+                                ui.monospace(format!("id:              {id}"));
+                                ui.monospace(format!(
+                                    "x/y:             {:.2} / {:.2}",
+                                    sys.x, sys.y
+                                ));
+                                ui.monospace(format!(
+                                    "binding_remainder:{:.3}",
+                                    sys.binding_remainder
+                                ));
+                                ui.monospace(format!("depleted:        {}", sys.depleted));
+                                if show_fuse {
+                                    ui.monospace(format!(
+                                        "fuse_end_tick:   {:?}",
+                                        sys.fuse_end_tick
+                                    ));
+                                    ui.monospace(format!(
+                                        "fuse_remaining:  {:?}",
+                                        sys.fuse_remaining
+                                    ));
+                                } else {
+                                    ui.monospace("fuse_end_tick:   unknown");
+                                    ui.monospace("fuse_remaining:  unknown");
+                                    ui.label(
+                                        RichText::new(
+                                            "(fuse hidden — surveyed_fuse=false)",
+                                        )
+                                        .weak()
+                                        .small(),
+                                    );
+                                }
+                                let state = sky::map_state(sys);
+                                ui.monospace(format!("map_state:       {}", state.as_str()));
+                                ui.monospace(format!(
+                                    "wilderness:      {}  surveyed: {}  claimed: {}",
+                                    sys.wilderness, sys.surveyed, sys.claimed
+                                ));
+                                ui.monospace(format!(
+                                    "home:            capital={} flag={} paused={}",
+                                    sys.is_home_capital, sys.home_flag, sys.fuse_paused
+                                ));
+                                ui.monospace(format!("ended:           {}", sys.ended));
+                                ui.monospace(format!("jump_links:      {}", sys.jump_links.len()));
+                                ui.monospace(format!("lod_hint:        {:?}", sys.lod_hint));
+                            } else {
+                                ui.label("System not found on ledger.");
+                            }
+
+                            ui.separator();
+                            ui.label(RichText::new("Bodies in system (System → Body)").strong());
+                            let bodies: Vec<(EntityId, f64, bool)> = self
+                                .world
+                                .ledger()
+                                .bodies_for_system(id)
+                                .map(|(bid, b)| (*bid, b.pops, b.automation_active))
+                                .collect();
+                            if bodies.is_empty() {
+                                ui.label("(no bodies)");
+                            } else {
+                                for (bid, pops, auto) in bodies {
+                                    ui.horizontal(|ui| {
+                                        ui.monospace(format!(
+                                            "body {bid}  pops={pops:.0} auto={auto}"
+                                        ));
+                                        if ui.button("Open Body").clicked() {
+                                            open_body = Some(bid);
+                                        }
+                                    });
+                                }
+                            }
+
+                            ui.separator();
+                            ui.label(RichText::new("Fleet (System → Ship)").strong());
+                            if fog_on {
+                                // Unseen fleets absent — only contact fog known_fleets.
+                                if known_fleet_ids.is_empty() {
+                                    ui.label("(no known fleets in empire fog)");
+                                } else {
+                                    for sid in known_fleet_ids.iter().take(24) {
+                                        ui.horizontal(|ui| {
+                                            ui.monospace(format!("ship {sid}"));
+                                            if ui.button("Open Ship").clicked() {
+                                                open_ship = Some(*sid);
+                                            }
+                                        });
+                                    }
+                                    if known_fleet_ids.len() > 24 {
+                                        ui.label(format!(
+                                            "… +{} more known",
+                                            known_fleet_ids.len() - 24
+                                        ));
+                                    }
+                                }
+                            } else {
+                                ui.label(
+                                    RichText::new(
+                                        "ShipInstance has no system field yet — listing all world.ships",
+                                    )
+                                    .weak()
+                                    .small(),
+                                );
+                                let ships: Vec<EntityId> =
+                                    self.world.ships.keys().copied().collect();
+                                if ships.is_empty() {
+                                    ui.label("(no ships in world.ships)");
+                                } else {
+                                    for sid in ships.iter().take(24) {
+                                        ui.horizontal(|ui| {
+                                            ui.monospace(format!("ship {sid}"));
+                                            if ui.button("Open Ship").clicked() {
+                                                open_ship = Some(*sid);
+                                            }
+                                        });
+                                    }
+                                    if ships.len() > 24 {
+                                        ui.label(format!(
+                                            "… +{} more (see Fleet list)",
+                                            ships.len() - 24
+                                        ));
+                                    }
+                                }
+                            }
+                            if ui.button("Open Fleet list…").clicked() {
+                                open_fleet = true;
+                            }
+                            ui.separator();
                             ui.horizontal(|ui| {
-                                ui.monospace(format!("body {bid}  pops={pops:.0} auto={auto}"));
-                                if ui.button("Open Body").clicked() {
-                                    open_body = Some(bid);
+                                if ui.button("Research…").clicked() {
+                                    self.research_open = true;
+                                }
+                                if ui.button("Designs…").clicked() {
+                                    self.designs_open = true;
                                 }
                             });
                         }
                     }
-
-                    ui.separator();
-                    ui.label(RichText::new("Fleet (System → Ship)").strong());
-                    ui.label(
-                        RichText::new(
-                            "ShipInstance has no system field yet — listing all world.ships",
-                        )
-                        .weak()
-                        .small(),
-                    );
-                    let ships: Vec<EntityId> = self.world.ships.keys().copied().collect();
-                    if ships.is_empty() {
-                        ui.label("(no ships in world.ships)");
-                    } else {
-                        for sid in ships.iter().take(24) {
-                            ui.horizontal(|ui| {
-                                ui.monospace(format!("ship {sid}"));
-                                if ui.button("Open Ship").clicked() {
-                                    open_ship = Some(*sid);
-                                }
-                            });
-                        }
-                        if ships.len() > 24 {
-                            ui.label(format!("… +{} more (see Fleet list)", ships.len() - 24));
-                        }
-                    }
-                    if ui.button("Open Fleet list…").clicked() {
-                        open_fleet = true;
-                    }
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("Research…").clicked() {
-                            self.research_open = true;
-                        }
-                        if ui.button("Designs…").clicked() {
-                            self.designs_open = true;
-                        }
-                    });
                 } else {
                     ui.label("Select a system on the map.");
                 }
@@ -896,28 +1037,37 @@ impl eframe::App for HeliosApp {
                 {
                     self.viewpoint = Viewpoint::Operator;
                 }
-                let empire_label = self
-                    .world
-                    .ledger()
-                    .empires()
-                    .next()
-                    .map(|(id, e)| {
-                        format!(
-                            "Empire: {}",
-                            e.name.clone().unwrap_or_else(|| id.to_string())
-                        )
-                    })
-                    .unwrap_or_else(|| "Empire: (none)".into());
+                self.ensure_viewpoint_empire();
+                let empire_label = match self.viewpoint_empire {
+                    Some(eid) => {
+                        let name = self
+                            .world
+                            .ledger()
+                            .get_empire(eid)
+                            .and_then(|e| e.name.clone())
+                            .unwrap_or_else(|| eid.to_string());
+                        format!("Empire: {name}")
+                    }
+                    None => "Empire: (none)".into(),
+                };
                 if ui
                     .selectable_label(self.viewpoint == Viewpoint::Empire, empire_label)
                     .clicked()
                 {
                     self.viewpoint = Viewpoint::Empire;
+                    self.ensure_viewpoint_empire();
                 }
                 if self.viewpoint == Viewpoint::Empire {
+                    if ui.small_button("Cycle empire").clicked() {
+                        self.cycle_viewpoint_empire();
+                    }
+                    let known_n = self
+                        .viewpoint_fog()
+                        .map(|f| f.known_systems.len())
+                        .unwrap_or(0);
                     ui.colored_label(
                         Color32::from_rgb(200, 180, 100),
-                        "(filter chrome stub — knowledge soft)",
+                        format!("(fog filter — {known_n} known systems)"),
                     );
                 }
                 ui.separator();
@@ -973,9 +1123,18 @@ impl eframe::App for HeliosApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.label("Map (pan: drag · zoom: scroll · click: inspect)");
-            let empire_soft = self.viewpoint == Viewpoint::Empire;
+            // Empire viewpoint: live contact fog ref (no clone). Operator: fog off.
+            // Borrow fog from world.contact only so camera can be mutably borrowed.
+            let fog = match (self.viewpoint, self.viewpoint_empire) {
+                (Viewpoint::Empire, Some(eid)) => self
+                    .world
+                    .contact
+                    .get(fog::as_empire_id(eid))
+                    .map(|c| &c.fog),
+                _ => None,
+            };
             let (_resp, clicked) =
-                map::draw_map(ui, &self.world, &mut self.camera, self.selected, empire_soft);
+                map::draw_map(ui, &self.world, &mut self.camera, self.selected, fog);
             if let Some(id) = clicked {
                 self.selected = Some(id);
                 self.inspector_open = true;
