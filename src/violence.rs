@@ -94,6 +94,14 @@ pub enum ViolenceError {
     ShipNotFound {
         ship_id: EntityId,
     },
+    /// Firer design missing from world.
+    DesignNotFound {
+        design_id: EntityId,
+    },
+    /// No kinetic weapon / magazine ammo / wrecked firer (F can_fire failed).
+    InsufficientAmmo {
+        ship_id: EntityId,
+    },
 }
 
 /// High-rate Salt EnvLayers delta (stub constants).
@@ -379,6 +387,50 @@ pub fn apply_hull_damage(
 
 /// Backward-compatible alias — prefer [`apply_hull_damage`].
 
+
+/// Fire a ship's kinetic magazine once, then resolve a planetary layer strike.
+///
+/// Real ammo consumption via F [`fire_kinetic`] / [`spend_magazine`] — not a stub.
+/// Fails before layer writes if the firer cannot fire (no weapon, empty mag, wrecked).
+pub fn strike_fire_ship(
+    world: &mut World,
+    actor: EmpireId,
+    victim: EmpireId,
+    system: EntityId,
+    body_id: EntityId,
+    kind: StrikeKind,
+    delta: EnvLayers,
+    firer_ship_id: EntityId,
+    ammo_id: &str,
+) -> Result<(ViolenceOutcome, f64), ViolenceError> {
+    let design_id = world
+        .ships
+        .get(&firer_ship_id)
+        .ok_or(ViolenceError::ShipNotFound {
+            ship_id: firer_ship_id,
+        })?
+        .design_id;
+    let design = world
+        .ship_designs
+        .get(&design_id)
+        .cloned()
+        .ok_or(ViolenceError::DesignNotFound { design_id })?;
+    let ship = world
+        .ships
+        .get_mut(&firer_ship_id)
+        .ok_or(ViolenceError::ShipNotFound {
+            ship_id: firer_ship_id,
+        })?;
+    let ammo_left = crate::hulls::fire_kinetic(&design, ship, ammo_id).map_err(|_| {
+        ViolenceError::InsufficientAmmo {
+            ship_id: firer_ship_id,
+        }
+    })?;
+    let out = strike_layers(world, actor, victim, system, body_id, kind, delta)?;
+    world.recompute_outcome_hash();
+    Ok((out, ammo_left))
+}
+
 /// Layer strike plus optional ship hull damage (F).
 pub fn strike_with_ship(
     world: &mut World,
@@ -595,7 +647,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn hull_damage_emits_wreck_ko_when_immobilized() {
         use crate::hulls::{make_design, spawn_instance};
         use crate::knowledge::KoKind;
@@ -652,6 +703,8 @@ mod tests {
         assert!(after >= before);
         assert_eq!(after, w.master_tick());
     }
+
+    #[test]
     fn body_system_mismatch_errors() {
         let mut w = World::new(203);
         let systems: Vec<_> = w.ledger().systems().map(|(id, _)| *id).collect();
@@ -677,4 +730,77 @@ mod tests {
         assert!(out.refugee_ko.is_none());
         assert!(out.signal_ko.is_some());
     }
+
+    #[test]
+    fn strike_fire_ship_spends_magazine() {
+        use crate::hulls::{load_magazine, make_design, spawn_instance};
+
+        let (mut w, actor, victim, system, body_id) = setup_with_body(50.0);
+        let design = make_design(
+            EntityId(920),
+            "striker",
+            vec![
+                "module.engine_chem".into(),
+                "module.crew_habitat".into(),
+                "module.weapon_kinetic".into(),
+            ],
+        )
+        .unwrap();
+        let ship_id = EntityId(921);
+        w.ship_designs.insert(design.id, design.clone());
+        let mut inst = spawn_instance(ship_id, &design, 5.0);
+        load_magazine(&mut inst, "ammo.kinetic", 3.0).unwrap();
+        w.ships.insert(ship_id, inst);
+
+        let delta = EnvLayers {
+            atmosphere_pressure: 0.0,
+            temperature: 0.0,
+            radiation: 1.0,
+            toxins_fallout: 0.0,
+            biosphere: 0.0,
+        };
+        let (_out, left) = strike_fire_ship(
+            &mut w,
+            actor,
+            victim,
+            system,
+            body_id,
+            StrikeKind::OrbitalStrike,
+            delta.clone(),
+            ship_id,
+            "ammo.kinetic",
+        )
+        .unwrap();
+        assert!((left - 2.0).abs() < 1e-9);
+        assert!(
+            (w.ships.get(&ship_id).unwrap().magazines.get("ammo.kinetic").copied().unwrap() - 2.0)
+                .abs()
+                < 1e-9
+        );
+        assert!(w.log().events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::OrbitalStrike { .. }
+        )));
+
+        // Empty magazine fails before layer write.
+        let mag = w.ships.get_mut(&ship_id).unwrap().magazines.get_mut("ammo.kinetic").unwrap();
+        *mag = 0.0;
+        w.ships.get_mut(&ship_id).unwrap().magazines.remove("ammo.kinetic");
+        let before_events = w.log().events().len();
+        let err = strike_fire_ship(
+            &mut w,
+            actor,
+            victim,
+            system,
+            body_id,
+            StrikeKind::OrbitalStrike,
+            delta,
+            ship_id,
+            "ammo.kinetic",
+        )
+        .unwrap_err();
+        assert_eq!(err, ViolenceError::InsufficientAmmo { ship_id });
+        assert_eq!(w.log().events().len(), before_events);
+    }
+
 }
