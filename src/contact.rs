@@ -535,6 +535,19 @@ pub fn fulfill_survey_charter(
 }
 
 /// Grow fleet-fog uncertainty for one observer (quiet ticks without a fresh fix).
+
+/// Grow system-fog uncertainty for one observer (quiet ticks without upgrade).
+pub fn decay_system_fog(world: &mut World, observer: EmpireId, factor: f64) {
+    let factor = factor.clamp(1.0, 4.0);
+    let Some(contact) = world.contact.empires.get_mut(&observer) else {
+        return;
+    };
+    for entry in contact.fog.known_systems.values_mut() {
+        entry.uncertainty = (entry.uncertainty * factor).min(1.0);
+    }
+    world.recompute_outcome_hash();
+}
+
 pub fn decay_fleet_fog(world: &mut World, observer: EmpireId, factor: f64) {
     let factor = factor.clamp(1.0, 4.0);
     let Some(contact) = world.contact.empires.get_mut(&observer) else {
@@ -815,6 +828,20 @@ mod tests {
             sys.hot_until,
             Some(crate::lod::hot_until_tick(now, crate::lod::DEFAULT_HOT_TTL_TICKS))
         );
+    }
+
+
+    #[test]
+    fn decay_system_fog_raises_uncertainty() {
+        let mut w = World::new(120);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let e = EmpireId(8);
+        grant_fog(&mut w, e, system);
+        let u0 = w.contact.get(e).unwrap().fog.known_systems[&system].uncertainty;
+        decay_system_fog(&mut w, e, 2.0);
+        let u1 = w.contact.get(e).unwrap().fog.known_systems[&system].uncertainty;
+        assert!(u1 > u0);
+        assert!(u1 <= 1.0);
     }
 
 }

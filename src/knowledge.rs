@@ -329,3 +329,64 @@ pub fn leak_ko(world: &mut World, ko_id: EntityId, by: EmpireId) -> bool {
     world.recompute_outcome_hash();
     true
 }
+
+/// Hand off a KO from one empire carrier to another (Lock 9 carrier chain).
+///
+/// `from` must already hold the KO. Removes their empire carrier, then
+/// [`acquire_ko`] for `to` (standing/events apply for the recipient).
+pub fn transfer_ko(
+    world: &mut World,
+    ko_id: EntityId,
+    from: EmpireId,
+    to: EmpireId,
+) -> bool {
+    if from == to {
+        return acquire_ko(world, to, ko_id);
+    }
+    let tick = world.master_tick();
+    let Some(ko) = world.knowledge.get_mut(ko_id) else {
+        return false;
+    };
+    let from_carrier = CarrierId::Empire(from);
+    if !ko.carriers.contains(&from_carrier) {
+        return false;
+    }
+    ko.carriers.remove(&from_carrier);
+    ko.last_transfer_tick = tick;
+    drop(ko);
+    acquire_ko(world, to, ko_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::EmpireId;
+    use crate::world::World;
+
+    #[test]
+    fn transfer_ko_moves_carrier() {
+        let mut w = World::new(121);
+        let from = EmpireId(1);
+        let to = EmpireId(2);
+        let actor = EmpireId(3);
+        let ko = inject_rumor(
+            &mut w,
+            KoKind::Signal,
+            KoPayload {
+                who_actor: Some(actor),
+                who_victim: None,
+                system: None,
+                severity: 0,
+                target_type: "xfer".into(),
+                claim: "hand off".into(),
+            },
+            Some(from),
+        );
+        assert!(w.knowledge.get(ko).unwrap().carriers.contains(&CarrierId::Empire(from)));
+        assert!(transfer_ko(&mut w, ko, from, to));
+        let carriers = &w.knowledge.get(ko).unwrap().carriers;
+        assert!(!carriers.contains(&CarrierId::Empire(from)));
+        assert!(carriers.contains(&CarrierId::Empire(to)));
+        assert!(!transfer_ko(&mut w, ko, from, to)); // from no longer holds
+    }
+}

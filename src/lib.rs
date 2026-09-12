@@ -29,7 +29,7 @@ pub mod hulls;
 pub mod ui;
 
 pub use contact::{
-    break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, has_clause, mark_system_surveyed, decay_fleet_fog, fulfill_survey_charter, fulfill_salvage_rights, open_passage_allows, has_active_contract, push_fine_hot,
+    break_treaty, default_contract, empire_contact_active, first_contact, grant_fog, has_clause, mark_system_surveyed, decay_fleet_fog, decay_system_fog, fulfill_survey_charter, fulfill_salvage_rights, open_passage_allows, has_active_contract, push_fine_hot,
     sense_fleet, sign_contract, sign_treaty, upgrade_fog, Contract, ContractKind, EmpireContact,
     EmpireContactStore, FleetFogEntry, FogState, SystemFogEntry, Treaty, TreatyClause,
 };
@@ -41,7 +41,7 @@ pub use event::{event_one_line, ChronicleEvent, EventKind, EventLog, DEFAULT_MAX
 pub use globals::Globals;
 pub use knowledge::{
     acquire_ko, confirm_ko, emit_ko, inject_rumor, salvage_contact, CarrierId, EmitKoParams,
-    KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation, confess_ko, leak_ko,};
+    KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation, confess_ko, leak_ko, transfer_ko,};
 pub use lod::{cool_hot_if_expired, hot_until_tick, skip_quiet_fine_work, LodHint, LodMode, DEFAULT_HOT_TTL_TICKS};
 pub use matter::{
     add_deposit, compute_binding_remainder, deposit_counts_as_binding, extract,
