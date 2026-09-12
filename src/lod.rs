@@ -74,6 +74,17 @@ mod tests {
             LodHint::Quiet
         );
     }
+
+    #[test]
+    fn stamp_hot_sets_hint_and_until() {
+        let mut hint = LodHint::Quiet;
+        let mut until = None;
+        stamp_hot(&mut hint, &mut until, 10, DEFAULT_HOT_TTL_TICKS);
+        assert_eq!(hint, LodHint::Hot);
+        assert_eq!(until, Some(42));
+        stamp_hot(&mut hint, &mut until, 20, 5);
+        assert_eq!(until, Some(25));
+    }
 }
 
 /// Default Hot dwell in master ticks before cool-down (Lock 10).
@@ -95,3 +106,9 @@ pub fn cool_hot_if_expired(now: u64, hot_until: Option<u64>, hint: LodHint) -> L
     }
 }
 
+
+/// Stamp a system Hot and set/refresh its TTL (Lock 10).
+pub fn stamp_hot(hint: &mut LodHint, hot_until: &mut Option<u64>, now: u64, ttl: u64) {
+    *hint = LodHint::Hot;
+    *hot_until = Some(hot_until_tick(now, ttl));
+}

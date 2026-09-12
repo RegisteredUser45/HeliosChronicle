@@ -115,6 +115,21 @@ impl World {
         world
     }
 
+    /// Mark a system Hot and stamp `hot_until` from the default TTL.
+    pub fn stamp_system_hot(&mut self, id: crate::entity::EntityId) -> bool {
+        let now = self.master_tick;
+        if let Some(sys) = self.ledger.get_mut(id) {
+            crate::lod::stamp_hot(
+                &mut sys.lod_hint,
+                &mut sys.hot_until,
+                now,
+                crate::lod::DEFAULT_HOT_TTL_TICKS,
+            );
+            return true;
+        }
+        false
+    }
+
     /// Lock 10: expire Hot hints whose `hot_until` has been reached.
     pub fn apply_hot_ttl_cooldown(&mut self) {
         let now = self.master_tick;
