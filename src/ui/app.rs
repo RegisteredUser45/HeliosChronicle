@@ -502,10 +502,24 @@ impl HeliosApp {
             self.open_ships.insert(sid);
         }
         if let Some(bid) = open_colony {
-            self.open_colonies.insert(bid);
+            let fog_filter = self.viewpoint == Viewpoint::Empire;
+            let fog = self.viewpoint_fog();
+            let sys_ok = self
+                .world
+                .ledger()
+                .get_body(bid)
+                .map(|b| fog::may_open_system_detail(fog_filter, fog, b.system))
+                .unwrap_or(false);
+            if sys_ok {
+                self.open_colonies.insert(bid);
+            }
         }
         if let Some(sid) = open_industry_sys {
-            self.open_industry.insert(sid);
+            let fog_filter = self.viewpoint == Viewpoint::Empire;
+            let fog = self.viewpoint_fog();
+            if fog::may_open_system_detail(fog_filter, fog, sid) {
+                self.open_industry.insert(sid);
+            }
         }
         if open_fleet {
             self.fleet_open = true;
@@ -596,7 +610,17 @@ impl HeliosApp {
                                 .small(),
                             );
                             if ui.button("Open Colony…").clicked() {
-                                self.open_colonies.insert(bid);
+                                let fog_filter = self.viewpoint == Viewpoint::Empire;
+                                let fog = self.viewpoint_fog();
+                                let sys_ok = self
+                                    .world
+                                    .ledger()
+                                    .get_body(bid)
+                                    .map(|b| fog::may_open_system_detail(fog_filter, fog, b.system))
+                                    .unwrap_or(false);
+                                if sys_ok {
+                                    self.open_colonies.insert(bid);
+                                }
                             }
                         }
                         None => {
@@ -1442,13 +1466,23 @@ impl eframe::App for HeliosApp {
                 }
                 if ui.button("Industry").clicked() {
                     if let Some(sid) = self.selected {
-                        self.open_industry.insert(sid);
+                        let fog_filter = self.viewpoint == Viewpoint::Empire;
+                        let fog = self.viewpoint_fog();
+                        if fog::may_open_system_detail(fog_filter, fog, sid) {
+                            self.open_industry.insert(sid);
+                        }
                     }
                 }
                 if ui.button("Colony").clicked() {
                     // Open colony for first open body, else first body of selected system.
+                    // Empire + unknown/missing fog: do not open full Colony (same check as map).
+                    let fog_filter = self.viewpoint == Viewpoint::Empire;
+                    let fog = self.viewpoint_fog();
                     let pick = self.open_bodies.iter().next().copied().or_else(|| {
                         self.selected.and_then(|sid| {
+                            if !fog::may_open_system_detail(fog_filter, fog, sid) {
+                                return None;
+                            }
                             self.world
                                 .ledger()
                                 .bodies_for_system(sid)
@@ -1457,7 +1491,15 @@ impl eframe::App for HeliosApp {
                         })
                     });
                     if let Some(bid) = pick {
-                        self.open_colonies.insert(bid);
+                        let sys_ok = self
+                            .world
+                            .ledger()
+                            .get_body(bid)
+                            .map(|b| fog::may_open_system_detail(fog_filter, fog, b.system))
+                            .unwrap_or(false);
+                        if sys_ok {
+                            self.open_colonies.insert(bid);
+                        }
                     }
                 }
                 if ui.button("Tags").clicked() {
@@ -1565,6 +1607,8 @@ impl eframe::App for HeliosApp {
             );
             // Empire viewpoint: live contact fog ref (no clone). Operator: fog off.
             // Borrow fog from world.contact only so camera can be mutably borrowed.
+            let fog_filter = self.viewpoint == Viewpoint::Empire;
+            // Missing contact under Empire → None fog with filter on = all unknown.
             let fog = match (self.viewpoint, self.viewpoint_empire) {
                 (Viewpoint::Empire, Some(eid)) => self
                     .world
@@ -1594,7 +1638,7 @@ impl eframe::App for HeliosApp {
                 system_name_color: Some(&color_fn),
             };
             let (_resp, action) =
-                map::draw_map(ui, &self.world, &mut self.camera, self.selected, fog, chrome);
+                map::draw_map(ui, &self.world, &mut self.camera, self.selected, fog_filter, fog, chrome);
             match action {
                 Some(MapAction::SelectSystem(id)) => {
                     self.selected = Some(id);

@@ -117,14 +117,15 @@ pub struct MapChrome<'a> {
 
 /// Draw jump graph + systems + waypoints; returns click selection / place.
 ///
-/// `fog`: `None` = Operator (all) — full ledger colors. `Some` = Empire viewpoint —
-/// systems absent from `known_systems` draw as unknown placeholders (no map_state /
-/// fuse/binding leak); jump links only between known systems.
+/// `fog_filter`: Empire viewpoint on (even when contact/fog is missing/empty).
+/// `fog`: live `FogState` ref when the empire has contact; `None` with filter on =
+/// empty fog → all systems unknown (never Operator-all paint).
 pub fn draw_map(
     ui: &mut Ui,
     world: &World,
     camera: &mut MapCamera,
     selected: Option<EntityId>,
+    fog_filter: bool,
     fog: Option<&FogState>,
     chrome: MapChrome<'_>,
 ) -> (Response, Option<MapAction>) {
@@ -158,7 +159,7 @@ pub fn draw_map(
         }
     }
 
-    let fog_on = fog.is_some();
+    let fog_on = fog_filter;
 
     // Positions from live ledger (ids + coords) — knowledge via fog ref, no fog clone.
     let positions: Vec<(EntityId, Pos2, MapState, bool)> = world
