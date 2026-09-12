@@ -41,7 +41,7 @@ pub use event::{event_one_line, ChronicleEvent, EventKind, EventLog, DEFAULT_MAX
 pub use globals::Globals;
 pub use knowledge::{
     acquire_ko, confirm_ko, emit_ko, inject_rumor, salvage_contact, CarrierId, EmitKoParams,
-    KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation, confess_ko, leak_ko, transfer_ko,};
+    KnowledgeObject, KnowledgeStore, KoGrade, KoKind, KoPayload, KoPropagation, confess_ko, leak_ko, transfer_ko, host_refugees,};
 pub use lod::{cool_hot_if_expired, hot_until_tick, skip_quiet_fine_work, LodHint, LodMode, DEFAULT_HOT_TTL_TICKS};
 pub use matter::{
     add_deposit, compute_binding_remainder, deposit_counts_as_binding, extract,

@@ -334,6 +334,27 @@ pub fn leak_ko(world: &mut World, ko_id: EntityId, by: EmpireId) -> bool {
 ///
 /// `from` must already hold the KO. Removes their empire carrier, then
 /// [`acquire_ko`] for `to` (standing/events apply for the recipient).
+
+/// Host a RefugeeWave KO: acquire for `host` and grant fog on the KO's system if named.
+///
+/// Fails closed unless the object exists and is `KoKind::RefugeeWave`.
+pub fn host_refugees(world: &mut World, host: EmpireId, ko_id: EntityId) -> bool {
+    let Some(ko) = world.knowledge.get(ko_id) else {
+        return false;
+    };
+    if ko.kind != KoKind::RefugeeWave {
+        return false;
+    }
+    let system = ko.payload.system;
+    if !acquire_ko(world, host, ko_id) {
+        return false;
+    }
+    if let Some(sys) = system {
+        crate::contact::grant_fog(world, host, sys);
+    }
+    true
+}
+
 pub fn transfer_ko(
     world: &mut World,
     ko_id: EntityId,
@@ -389,4 +410,52 @@ mod tests {
         assert!(carriers.contains(&CarrierId::Empire(to)));
         assert!(!transfer_ko(&mut w, ko, from, to)); // from no longer holds
     }
+
+    #[test]
+    fn host_refugees_grants_fog() {
+        let mut w = World::new(140);
+        let host = EmpireId(4);
+        let system = *w.ledger().systems().next().unwrap().0;
+        let ko = emit_ko(
+            &mut w,
+            EmitKoParams {
+                kind: KoKind::RefugeeWave,
+                grade: KoGrade::Rumor,
+                origin_event_seq: None,
+                payload: KoPayload {
+                    who_actor: Some(EmpireId(1)),
+                    who_victim: Some(EmpireId(2)),
+                    system: Some(system),
+                    severity: 3,
+                    target_type: "refugees".into(),
+                    claim: "evac".into(),
+                },
+                initial_carriers: Default::default(),
+                propagation: KoPropagation::EvacConvoy,
+            },
+        );
+        assert!(host_refugees(&mut w, host, ko));
+        assert!(w
+            .knowledge
+            .get(ko)
+            .unwrap()
+            .carriers
+            .contains(&CarrierId::Empire(host)));
+        assert!(w
+            .contact
+            .get(host)
+            .unwrap()
+            .fog
+            .known_systems
+            .contains_key(&system));
+        // Wrong kind fails.
+        let signal = inject_rumor(
+            &mut w,
+            KoKind::Signal,
+            KoPayload::default(),
+            None,
+        );
+        assert!(!host_refugees(&mut w, host, signal));
+    }
+
 }
