@@ -87,6 +87,8 @@ pub enum WorldsError {
     NoBomRecipe(String),
     RecipeFailed(String),
     ReaggregateFailed,
+    InsufficientStock,
+    BadStrength,
 }
 
 impl std::fmt::Display for WorldsError {
@@ -100,6 +102,8 @@ impl std::fmt::Display for WorldsError {
             Self::NoBomRecipe(id) => write!(f, "facility has no bom_recipe {id}"),
             Self::RecipeFailed(id) => write!(f, "recipe failed {id}"),
             Self::ReaggregateFailed => write!(f, "binding reaggregate failed"),
+            Self::InsufficientStock => write!(f, "insufficient remediation stock"),
+            Self::BadStrength => write!(f, "strength must be in (0, 1]"),
         }
     }
 }
@@ -308,6 +312,188 @@ fn consume_stock_at_system_raw(
         }
     }
     (got, from_deposits)
+}
+
+/// Organics-equivalent cost stub for absolute layer remediation magnitude.
+pub fn remediation_stock_cost(delta_abs: f64) -> f64 {
+    delta_abs.max(0.0) * 0.5
+}
+
+/// Signed gap to bring `value` fully into `[min, max]` (positive ⇒ raise value).
+fn gap_toward_band(value: f64, min: f64, max: f64) -> f64 {
+    if value < min {
+        min - value
+    } else if value > max {
+        max - value
+    } else {
+        0.0
+    }
+}
+
+fn stock_available_at_system(
+    world: &crate::world::World,
+    system: crate::entity::EntityId,
+    stock: &str,
+) -> f64 {
+    let Some(sys) = world.ledger.get(system) else {
+        return 0.0;
+    };
+    let in_dep: f64 = sys
+        .deposits
+        .iter()
+        .filter(|d| d.stock_id == stock)
+        .map(|d| d.quantity)
+        .sum();
+    let in_sal = sys.salvage_by_stock.get(stock).copied().unwrap_or(0.0);
+    let in_out = sys.outputs_stock.get(stock).copied().unwrap_or(0.0);
+    in_dep + in_sal + in_out
+}
+
+/// Consume `need` of `stock` from deposits, then salvage_by_stock, then outputs_stock.
+fn consume_remediation_stock(
+    world: &mut crate::world::World,
+    system: crate::entity::EntityId,
+    stock: &str,
+    need: f64,
+) -> f64 {
+    if need <= 1e-12 {
+        return 0.0;
+    }
+    let Some(sys) = world.ledger.get_mut(system) else {
+        return 0.0;
+    };
+    let mut left = need;
+    let mut got = 0.0;
+    for d in sys.deposits.iter_mut() {
+        if left <= 1e-12 {
+            break;
+        }
+        if d.stock_id != stock {
+            continue;
+        }
+        let take = d.quantity.min(left).max(0.0);
+        d.quantity -= take;
+        left -= take;
+        got += take;
+    }
+    sys.deposits.retain(|d| d.quantity > 1e-12);
+    if left > 1e-12 {
+        let have = sys.salvage_by_stock.get(stock).copied().unwrap_or(0.0);
+        let take = have.min(left).max(0.0);
+        if take > 0.0 {
+            let e = sys.salvage_by_stock.entry(stock.to_string()).or_insert(0.0);
+            *e = (*e - take).max(0.0);
+            if *e <= 1e-12 {
+                sys.salvage_by_stock.remove(stock);
+            }
+            left -= take;
+            got += take;
+        }
+    }
+    if left > 1e-12 {
+        let have = sys.outputs_stock.get(stock).copied().unwrap_or(0.0);
+        let take = have.min(left).max(0.0);
+        if take > 0.0 {
+            *sys.outputs_stock.get_mut(stock).unwrap() = (have - take).max(0.0);
+            if sys.outputs_stock.get(stock).copied().unwrap_or(0.0) <= 1e-12 {
+                sys.outputs_stock.remove(stock);
+            }
+            got += take;
+        }
+    }
+    got
+}
+
+/// Pull hostile env layers toward the species envelope, spending organics then volatiles.
+///
+/// `strength` ∈ (0, 1] is the fraction of each out-of-band gap closed this call.
+/// Prefer remediating radiation and toxins_fallout first; also pressure/temp/biosphere.
+/// All-or-nothing: insufficient stock → Err with layers unchanged.
+pub fn remediate_body_layers(
+    world: &mut crate::world::World,
+    system: crate::entity::EntityId,
+    body_id: crate::entity::EntityId,
+    envelope: &SpeciesEnvelope,
+    strength: f64,
+) -> Result<f64, WorldsError> {
+    if !(strength.is_finite() && strength > 0.0 && strength <= 1.0) {
+        return Err(WorldsError::BadStrength);
+    }
+
+    let layers = {
+        let body = world
+            .ledger
+            .get_body(body_id)
+            .ok_or(WorldsError::BodyNotFound)?;
+        if body.system != system {
+            return Err(WorldsError::BodySystemMismatch);
+        }
+        body.layers.clone()
+    };
+
+    // Preferred order: radiation, toxins, then pressure / temperature / biosphere.
+    let mut planned = EnvLayers {
+        atmosphere_pressure: 0.0,
+        temperature: 0.0,
+        radiation: 0.0,
+        toxins_fallout: 0.0,
+        biosphere: 0.0,
+    };
+    planned.radiation =
+        gap_toward_band(layers.radiation, envelope.radiation.min, envelope.radiation.max) * strength;
+    // toxins: envelope has no toxin band — any positive toxins_fallout is hostile → pull toward 0.
+    if layers.toxins_fallout > 0.0 {
+        planned.toxins_fallout = -layers.toxins_fallout * strength;
+    }
+    planned.atmosphere_pressure = gap_toward_band(
+        layers.atmosphere_pressure,
+        envelope.pressure.min,
+        envelope.pressure.max,
+    ) * strength;
+    planned.temperature = gap_toward_band(
+        layers.temperature,
+        envelope.temperature.min,
+        envelope.temperature.max,
+    ) * strength;
+    // biosphere shortfall vs ideal 1.0
+    if layers.biosphere < 1.0 {
+        planned.biosphere = (1.0 - layers.biosphere) * strength;
+    }
+
+    let total_abs = planned.atmosphere_pressure.abs()
+        + planned.temperature.abs()
+        + planned.radiation.abs()
+        + planned.toxins_fallout.abs()
+        + planned.biosphere.abs();
+    if total_abs <= 1e-12 {
+        return Ok(0.0);
+    }
+
+    let cost = remediation_stock_cost(total_abs);
+    let org_avail = stock_available_at_system(world, system, "stock.organics");
+    let vol_avail = stock_available_at_system(world, system, "stock.volatiles");
+    let org_take = org_avail.min(cost);
+    let vol_need = (cost - org_take).max(0.0);
+    if vol_avail + 1e-12 < vol_need {
+        return Err(WorldsError::InsufficientStock);
+    }
+
+    let _ = consume_remediation_stock(world, system, "stock.organics", org_take);
+    let _ = consume_remediation_stock(world, system, "stock.volatiles", vol_need);
+    if org_take + vol_need > 1e-12 {
+        let _ = reaggregate_after_life_support_drain(world, system);
+    }
+
+    let body = world
+        .ledger
+        .get_body_mut(body_id)
+        .ok_or(WorldsError::BodyNotFound)?;
+    body.layers.atmosphere_pressure += planned.atmosphere_pressure;
+    body.layers.temperature += planned.temperature;
+    body.layers.radiation += planned.radiation;
+    body.layers.toxins_fallout += planned.toxins_fallout;
+    body.layers.biosphere += planned.biosphere;
+    Ok(total_abs)
 }
 
 pub fn apply_pop_deficits(body: &mut BodyEntity, envelope: &SpeciesEnvelope, dt: u64) -> f64 {
@@ -628,5 +814,89 @@ mod tests {
         let err =
             install_facility_on_body(&mut w, empire, system, body_id, "facility.yard").unwrap_err();
         assert!(matches!(err, WorldsError::FacilityNotBodyScoped(_)));
+    }
+
+    #[test]
+    fn remediate_pulls_hostile_layers_and_spends_organics() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::world::World;
+        let mut w = World::new(91);
+        let system = blank_system(&mut w);
+        let body_id = w.ledger.spawn_body(system);
+        {
+            let b = w.ledger.get_body_mut(body_id).unwrap();
+            b.layers.radiation = 21.0;
+            b.layers.toxins_fallout = 4.0;
+        }
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.organics", 50.0, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        let before_org: f64 = w
+            .ledger
+            .get(system)
+            .unwrap()
+            .deposits
+            .iter()
+            .filter(|d| d.stock_id == "stock.organics")
+            .map(|d| d.quantity)
+            .sum();
+        let env = SpeciesEnvelope::default();
+        let applied =
+            remediate_body_layers(&mut w, system, body_id, &env, 0.5).unwrap();
+        // radiation gap 20 → 10; toxins 4 → 2; total_abs 12
+        assert!((applied - 12.0).abs() < 1e-9);
+        let body = w.ledger.get_body(body_id).unwrap();
+        assert!((body.layers.radiation - 11.0).abs() < 1e-9);
+        assert!((body.layers.toxins_fallout - 2.0).abs() < 1e-9);
+        let after_org: f64 = w
+            .ledger
+            .get(system)
+            .unwrap()
+            .deposits
+            .iter()
+            .filter(|d| d.stock_id == "stock.organics")
+            .map(|d| d.quantity)
+            .sum();
+        // cost = 12 * 0.5 = 6
+        assert!((before_org - after_org - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remediate_insufficient_stock_leaves_layers() {
+        use crate::matter::{add_deposit, Deposit, ExtractorKind};
+        use crate::world::World;
+        let mut w = World::new(92);
+        let system = blank_system(&mut w);
+        let body_id = w.ledger.spawn_body(system);
+        {
+            let b = w.ledger.get_body_mut(body_id).unwrap();
+            b.layers.radiation = 21.0;
+            b.layers.toxins_fallout = 4.0;
+        }
+        add_deposit(
+            &mut w,
+            system,
+            Deposit::new("stock.organics", 0.1, 1.0, ExtractorKind::State),
+        )
+        .unwrap();
+        let env = SpeciesEnvelope::default();
+        let err = remediate_body_layers(&mut w, system, body_id, &env, 1.0).unwrap_err();
+        assert!(matches!(err, WorldsError::InsufficientStock));
+        let body = w.ledger.get_body(body_id).unwrap();
+        assert!((body.layers.radiation - 21.0).abs() < 1e-9);
+        assert!((body.layers.toxins_fallout - 4.0).abs() < 1e-9);
+        let org: f64 = w
+            .ledger
+            .get(system)
+            .unwrap()
+            .deposits
+            .iter()
+            .filter(|d| d.stock_id == "stock.organics")
+            .map(|d| d.quantity)
+            .sum();
+        assert!((org - 0.1).abs() < 1e-9);
     }
 }

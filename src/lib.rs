@@ -57,7 +57,7 @@ pub use politics::{
 };
 pub use save::{load_world, save_world, SaveError};
 pub use world::World;
-pub use worlds::{apply_facility_soaks, apply_layer_burst, apply_life_support_drain, apply_pop_deficits, compute_deficits, consume_stock_at_system, evacuate_body, facility_bom_recipe, install_facility_on_body, life_support_bill, reaggregate_after_life_support_drain, DeficitReport, WorldsError};
+pub use worlds::{apply_facility_soaks, apply_layer_burst, apply_life_support_drain, apply_pop_deficits, compute_deficits, consume_stock_at_system, evacuate_body, facility_bom_recipe, install_facility_on_body, life_support_bill, reaggregate_after_life_support_drain, remediate_body_layers, remediation_stock_cost, DeficitReport, WorldsError};
 pub use sensors::{
     detect_strike, discover_wreck, in_sensor_range, poll_signal_envelope, receive_signal, sense_system,
     sensor_jump_hops, track_fleet, within_sensor_range, SENSOR_RANGE_STUB, refresh_last_known_in_sensor_range};
