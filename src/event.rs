@@ -164,6 +164,10 @@ pub enum EventKind {
     SegmentResearched { empire: EntityId, segment: String },
     DesignRegistered { empire: EntityId, design: EntityId },
     YardTooled { empire: EntityId, design: EntityId },
+    BodyEvacuated {
+        body: EntityId,
+        leave_automation: bool,
+    },
     ShipBuilt { empire: EntityId, ship: EntityId, design: EntityId },
 }
 

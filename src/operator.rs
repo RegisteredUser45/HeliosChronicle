@@ -443,6 +443,13 @@ impl<'a> Operator<'a> {
         let tick = self.world.master_tick();
         self.world.log_mut().append(
             tick,
+            EventKind::BodyEvacuated {
+                body: body_id,
+                leave_automation,
+            },
+        );
+        self.world.log_mut().append(
+            tick,
             EventKind::OperatorMutation {
                 entity: body_id,
                 field: "evacuate".into(),
@@ -1138,5 +1145,24 @@ mod tests {
             w.labs.get(&lab).unwrap().assigned_segment.as_deref(),
             Some("seg.mine_auto")
         );
+    }
+
+    #[test]
+    fn evacuate_emits_body_evacuated() {
+        use crate::event::EventKind;
+        use crate::world::World;
+        let mut w = World::new(55);
+        let system = *w.ledger.systems().next().unwrap().0;
+        let body = w.ledger.spawn_body(system);
+        w.ledger.get_body_mut(body).unwrap().pops = 10.0;
+        {
+            let mut op = Operator::new(&mut w);
+            op.evacuate_colony(body, true).unwrap();
+        }
+        assert!(w.log.events().iter().any(|e| matches!(
+            &e.kind,
+            EventKind::BodyEvacuated { body: b, leave_automation: true } if *b == body
+        )));
+        assert_eq!(w.ledger.get_body(body).unwrap().pops, 0.0);
     }
 }
