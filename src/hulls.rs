@@ -38,6 +38,9 @@ pub struct ShipInstance {
     /// Magazines by ammo/catalog id.
     #[serde(default)]
     pub magazines: BTreeMap<String, f64>,
+    /// Loaded cargo mass (must stay ≤ cargo_capacity).
+    #[serde(default)]
+    pub cargo_qty: f64,
     /// Operator god field stubs (H/J consume later).
     #[serde(default)]
     pub planetary_strike: bool,
@@ -157,6 +160,7 @@ pub fn spawn_instance(id: EntityId, design: &ShipDesign, fuel_qty: f64) -> ShipI
         crew: design.crew_req,
         maintenance: 1.0,
         magazines: BTreeMap::new(),
+        cargo_qty: 0.0,
         planetary_strike: false,
         sidearm_caliber: 0.0,
     }
@@ -319,6 +323,19 @@ pub fn transfer_fuel(
     from.fuel_qty = (from.fuel_qty - qty).max(0.0);
     to.fuel_qty += qty;
     Ok(())
+}
+
+
+/// Load cargo onto ship up to design cargo_capacity.
+pub fn load_cargo(design: &ShipDesign, ship: &mut ShipInstance, qty: f64) -> Result<f64, HullError> {
+    if !qty.is_finite() || qty < 0.0 {
+        return Err(HullError::BadFuel);
+    }
+    let cap = cargo_capacity(design);
+    let room = (cap - ship.cargo_qty).max(0.0);
+    let take = qty.min(room);
+    ship.cargo_qty += take;
+    Ok(ship.cargo_qty)
 }
 
 pub fn cargo_capacity(design: &ShipDesign) -> f64 {
@@ -784,6 +801,22 @@ mod tests {
         assert!(can_move(&d, &inst));
         inst.crew = 0.0;
         assert!(!can_move(&d, &inst));
+    }
+
+    #[test]
+    fn load_cargo_respects_capacity() {
+        let d = make_design(
+            EntityId(110),
+            "hauler",
+            vec!["module.engine_chem".into(), "module.cargo_hold".into()],
+        )
+        .unwrap();
+        let mut s = spawn_instance(EntityId(111), &d, 1.0);
+        assert!((cargo_capacity(&d) - 10.0).abs() < 1e-9);
+        load_cargo(&d, &mut s, 7.0).unwrap();
+        assert!((s.cargo_qty - 7.0).abs() < 1e-9);
+        load_cargo(&d, &mut s, 10.0).unwrap();
+        assert!((s.cargo_qty - 10.0).abs() < 1e-9);
     }
 
 }

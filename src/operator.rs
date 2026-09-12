@@ -507,6 +507,33 @@ impl<'a> Operator<'a> {
         res.map_err(|e| OperatorError::Other(e.to_string()))
     }
 
+
+    /// Load cargo onto a ship up to design capacity.
+    pub fn load_ship_cargo(
+        &mut self,
+        ship_id: EntityId,
+        qty: f64,
+    ) -> Result<f64, OperatorError> {
+        let design_id = self
+            .world
+            .ships
+            .get(&ship_id)
+            .map(|s| s.design_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        let design = self
+            .world
+            .ship_designs
+            .get(&design_id)
+            .ok_or(OperatorError::NotFound(design_id))?
+            .clone();
+        let ship = self
+            .world
+            .ships
+            .get_mut(&ship_id)
+            .ok_or(OperatorError::NotFound(ship_id))?;
+        crate::hulls::load_cargo(&design, ship, qty).map_err(|e| OperatorError::Other(e.to_string()))
+    }
+
     /// Cargo capacity from design cargo_hold modules.
     pub fn ship_cargo_capacity(&self, ship_id: EntityId) -> Result<f64, OperatorError> {
         let ship = self
