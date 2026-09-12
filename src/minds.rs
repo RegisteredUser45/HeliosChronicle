@@ -101,6 +101,16 @@ pub fn fuse_evacuate_urgency_frac(snap: &DoctrineSnap) -> f64 {
     lo + (hi - lo) * snap.evacuate_vs_die_in_place.clamp(0.0, 1.0)
 }
 
+/// NEW: PlantCity seed pops scaled by settle bias (`1 - evacuate_vs_die_in_place`).
+///
+/// Players feel this: settle-biased empires plant larger cities; evacuate-biased
+/// empires seed smaller footholds. Range half..full `PLANT_CITY_POPS`.
+pub fn plant_city_pops_for_doctrine(snap: &DoctrineSnap) -> f64 {
+    let settle = (1.0 - snap.evacuate_vs_die_in_place).clamp(0.0, 1.0);
+    PLANT_CITY_POPS * (0.5 + 0.5 * settle)
+}
+
+
 /// Clamp doctrine willingness / bias into `[0.0, 1.0]`.
 pub fn clamp_doctrine(v: f64) -> f64 {
     if v.is_nan() {
@@ -418,9 +428,14 @@ pub fn execute_plant_city_intent(
     system_id: EntityId,
 ) -> EntityId {
     let _ = settle_claims_system(world, empire_id, system_id);
+    let seed = world
+        .ledger
+        .get_empire(empire_id)
+        .map(|e| plant_city_pops_for_doctrine(&doctrine_snap_from_empire(e)))
+        .unwrap_or(PLANT_CITY_POPS);
     let body_id = ensure_system_body(world, system_id);
     if let Some(body) = world.ledger.get_body_mut(body_id) {
-        body.pops = (body.pops + PLANT_CITY_POPS).max(PLANT_CITY_POPS);
+        body.pops = (body.pops + seed).max(seed);
         if let Some(empire) = world.ledger.get_empire(empire_id) {
             let empire = empire.clone();
             if let Some(body) = world.ledger.get_body_mut(body_id) {
@@ -1987,6 +2002,50 @@ mod minds_tests {
 
 
 
+
+    #[test]
+    fn plant_city_pops_scales_with_settle_doctrine() {
+        let settle = DoctrineSnap {
+            evacuate_vs_die_in_place: 0.0,
+            salt_willingness: 0.15,
+        };
+        let flee = DoctrineSnap {
+            evacuate_vs_die_in_place: 1.0,
+            salt_willingness: 0.15,
+        };
+        assert!((plant_city_pops_for_doctrine(&settle) - PLANT_CITY_POPS).abs() < 1e-9);
+        assert!((plant_city_pops_for_doctrine(&flee) - PLANT_CITY_POPS * 0.5).abs() < 1e-9);
+        assert!(plant_city_pops_for_doctrine(&settle) > plant_city_pops_for_doctrine(&flee));
+
+        let mut w = World::new(200);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        for (bid, _) in w.ledger.bodies_for_system(sys).map(|(id, b)| (*id, b.pops)).collect::<Vec<_>>() {
+            w.ledger.get_body_mut(bid).unwrap().pops = 0.0;
+        }
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.evacuate_vs_die_in_place = 0.0;
+        }
+        try_emit_order(&mut w, empire, OrderIntent::PlantCity, Some(sys), OrderSource::Ai)
+            .unwrap()
+            .unwrap();
+        let hi: f64 = w.ledger.bodies_for_system(sys).map(|(_, b)| b.pops).sum();
+        // Reset pops and plant with flee doctrine
+        for (bid, _) in w.ledger.bodies_for_system(sys).map(|(id, b)| (*id, b.pops)).collect::<Vec<_>>() {
+            w.ledger.get_body_mut(bid).unwrap().pops = 0.0;
+        }
+        {
+            let e = w.ledger.get_empire_mut(empire).unwrap();
+            e.evacuate_vs_die_in_place = 1.0;
+        }
+        try_emit_order(&mut w, empire, OrderIntent::PlantCity, Some(sys), OrderSource::Ai)
+            .unwrap()
+            .unwrap();
+        let lo: f64 = w.ledger.bodies_for_system(sys).map(|(_, b)| b.pops).sum();
+        assert!(hi > lo, "settle-biased city ({hi}) must out-seed flee-biased ({lo})");
+    }
+
     #[test]
     fn settle_claims_system_claims_and_senses() {
         let mut w = World::new(190);
@@ -2025,7 +2084,13 @@ mod minds_tests {
         assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::PlantCity);
         assert!(w.ledger.get(sys).unwrap().claimed);
         let pops: f64 = w.ledger.bodies_for_system(sys).map(|(_, b)| b.pops).sum();
-        assert!(pops >= PLANT_CITY_POPS - 1e-9);
+        let expected = plant_city_pops_for_doctrine(&doctrine_snap_from_empire(
+            w.ledger.get_empire(empire).unwrap(),
+        ));
+        assert!(
+            (pops - expected).abs() < 1e-9,
+            "expected {expected} pops, got {pops}"
+        );
     }
 
     #[test]
@@ -2047,14 +2112,17 @@ mod minds_tests {
         .unwrap()
         .expect("plant city");
         assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::PlantCity);
+        let expected = plant_city_pops_for_doctrine(&doctrine_snap_from_empire(
+            w.ledger.get_empire(empire).unwrap(),
+        ));
         let pops: f64 = w
             .ledger
             .bodies_for_system(sys)
             .map(|(_, b)| b.pops)
             .sum();
         assert!(
-            (pops - PLANT_CITY_POPS).abs() < 1e-9,
-            "expected {PLANT_CITY_POPS} pops, got {pops}"
+            (pops - expected).abs() < 1e-9,
+            "expected {expected} pops, got {pops}"
         );
     }
 
