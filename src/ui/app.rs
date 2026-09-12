@@ -68,6 +68,18 @@ pub struct HeliosApp {
     place_waypoint_mode: bool,
     /// Selected waypoint id in the Waypoints window editor.
     selected_waypoint: Option<u64>,
+    /// Catalog inspector (tech book lines / segments).
+    catalog_open: bool,
+    /// Selected segment id in Catalog detail pane.
+    selected_segment: Option<String>,
+    /// Yard / fleet-yard inspector.
+    yard_open: bool,
+    /// Empire whose yard tooling is shown (picker / viewpoint).
+    yard_empire: Option<EntityId>,
+    /// Contact inspector (treaties / contracts / standing / fog).
+    contact_open: bool,
+    /// Empire selected in Contact inspector.
+    contact_empire: Option<EntityId>,
 }
 
 impl HeliosApp {
@@ -123,6 +135,12 @@ impl HeliosApp {
             waypoints_open: false,
             place_waypoint_mode: false,
             selected_waypoint: None,
+            catalog_open: false,
+            selected_segment: None,
+            yard_open: false,
+            yard_empire: viewpoint_empire,
+            contact_open: false,
+            contact_empire: viewpoint_empire,
         }
     }
 
@@ -453,6 +471,21 @@ impl HeliosApp {
                                 }
                                 if ui.button("Designs…").clicked() {
                                     self.designs_open = true;
+                                }
+                                if ui.button("Yard…").clicked() {
+                                    self.yard_open = true;
+                                    if let Some(eid) = self.viewpoint_empire {
+                                        self.yard_empire = Some(eid);
+                                    }
+                                }
+                                if ui.button("Catalog…").clicked() {
+                                    self.catalog_open = true;
+                                }
+                                if ui.button("Contact…").clicked() {
+                                    self.contact_open = true;
+                                    if let Some(eid) = self.viewpoint_empire {
+                                        self.contact_empire = Some(eid);
+                                    }
                                 }
                             });
                         }
@@ -788,6 +821,9 @@ impl HeliosApp {
                 if ui.button("Open Designs…").clicked() {
                     open_designs = true;
                 }
+                if ui.button("Open Catalog…").clicked() {
+                    self.catalog_open = true;
+                }
                 ui.separator();
 
                 ui.label(RichText::new("Labs (roster)").strong());
@@ -970,6 +1006,12 @@ impl HeliosApp {
             .show(ctx, |ui| {
                 ui.label(RichText::new("breadcrumb: Catalog/Designs").weak());
                 ui.label(format!("world.ship_designs = {}", design_ids.len()));
+                if ui.button("Open Yard…").clicked() {
+                    self.yard_open = true;
+                    if let Some(eid) = self.viewpoint_empire {
+                        self.yard_empire = Some(eid);
+                    }
+                }
                 ui.separator();
                 ui.label(RichText::new("Designs (roster)").strong());
                 ScrollArea::vertical()
@@ -1383,6 +1425,21 @@ impl eframe::App for HeliosApp {
                 if ui.button("Designs").clicked() {
                     self.designs_open = true;
                 }
+                if ui.button("Catalog").clicked() {
+                    self.catalog_open = true;
+                }
+                if ui.button("Yard").clicked() {
+                    self.yard_open = true;
+                    if let Some(eid) = self.viewpoint_empire {
+                        self.yard_empire = Some(eid);
+                    }
+                }
+                if ui.button("Contact").clicked() {
+                    self.contact_open = true;
+                    if let Some(eid) = self.viewpoint_empire {
+                        self.contact_empire = Some(eid);
+                    }
+                }
                 if ui.button("Industry").clicked() {
                     if let Some(sid) = self.selected {
                         self.open_industry.insert(sid);
@@ -1469,6 +1526,36 @@ impl eframe::App for HeliosApp {
         self.show_design_inspector(ctx);
         super::colony::show_colony_inspectors(ctx, &self.world, &mut self.open_colonies);
         super::industry::show_industry_inspectors(ctx, &self.world, &mut self.open_industry);
+        {
+            let cat = super::catalog::show_catalog_inspector(
+                ctx,
+                &mut self.catalog_open,
+                &self.tech_lines,
+                &self.tech_segments,
+                &mut self.selected_segment,
+            );
+            if cat == super::catalog::CatalogAction::OpenResearch {
+                self.research_open = true;
+            }
+        }
+        {
+            let ya = super::yard::show_yard_inspector(
+                ctx,
+                &self.world,
+                &mut self.yard_open,
+                &mut self.yard_empire,
+                &mut self.selected_design,
+            );
+            if ya == super::yard::YardAction::OpenDesigns {
+                self.designs_open = true;
+            }
+        }
+        super::contacts::show_contact_inspector(
+            ctx,
+            &self.world,
+            &mut self.contact_open,
+            &mut self.contact_empire,
+        );
         self.show_tag_colors(ctx);
         self.show_waypoints_window(ctx);
 

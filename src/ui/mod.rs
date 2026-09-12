@@ -1,7 +1,8 @@
 //! Phase U — operator shell (instrument panel over the live ledger).
 //!
 //! Map root + pan/zoom + time controls + Chronicle/History strip + System /
-//! Body / Fleet (ship) / Research / Design / Colony / Industry inspectors.
+//! Body / Fleet (ship) / Research / Design / Colony / Industry / Catalog /
+//! Yard / Contact inspectors.
 //! Issue 11: EventLog moments only — no tick-perfect recording or replay
 //! viewer. STATEMENT §11: several windows may be open at once; UI is one
 //! client of the live World. Viewpoint is a knowledge filter (Operator =
@@ -9,11 +10,14 @@
 //! operator chrome (UI-side state).
 
 mod app;
+mod catalog;
 mod colony;
+mod contacts;
 mod fog;
 mod industry;
 mod map;
 mod tags;
 mod waypoints;
+mod yard;
 
 pub use app::{run, HeliosApp};
