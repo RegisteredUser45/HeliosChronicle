@@ -155,7 +155,7 @@ fn main() {
             #[cfg(not(feature = "ui"))]
             {
                 let _ = seed;
-                eprintln!("helios ui requires the `ui` feature (default)");
+                eprintln!("helios ui requires --features ui (off by default for headless builds)");
                 std::process::exit(1);
             }
         }

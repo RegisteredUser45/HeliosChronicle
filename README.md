@@ -39,10 +39,10 @@ Rust / Cargo library (`helios_chronicle`) + thin binary (`helios`).
 Instrument panel over the live ledger (STATEMENT §11). Map never goes away; pan/zoom; time pause/step; System inspector; EventLog chronicle strip (not a replay viewer).
 
 ```bash
-cargo run --bin helios -- ui --seed 42
+cargo run --features ui --bin helios -- ui --seed 42
 ```
 
-Requires a display and rustc ≥1.85ish (this box uses rustup 1.98). Optional feature `ui` pulls `eframe`/`egui`.
+Requires a display. Feature `ui` is **off by default** (keeps headless `cargo test --lib` free of egui). Enable with `--features ui`.
 
 ## Phase I — Minds (schema stub)
 

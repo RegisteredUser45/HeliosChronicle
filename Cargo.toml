@@ -15,7 +15,7 @@ name = "helios"
 path = "src/bin/helios.rs"
 
 [features]
-default = ["ui"]
+default = []
 ui = ["dep:eframe", "dep:egui"]
 
 [dependencies]
