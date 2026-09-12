@@ -25,6 +25,12 @@ pub const LONG_FEED: f64 = 400.0;
 pub const SHORT_FEED: f64 = 100.0;
 /// One-shot Ai StripMine drain via C `extract_state` (quantity units).
 pub const STRIP_MINE_EXTRACT: f64 = 25.0;
+/// Seed population planted by Ai PlantCity.
+pub const PLANT_CITY_POPS: f64 = 50.0;
+/// Structure soak floor for Ai PlantYard (yard pad).
+pub const PLANT_YARD_STRUCTURE_SOAK: f64 = 3.0;
+/// Structure soak floor for Ai Fortify.
+pub const FORTIFY_STRUCTURE_SOAK: f64 = 5.0;
 /// Known fuse remaining below this fraction of `globals.fuse_length_ticks` is urgent.
 const FUSE_URGENCY_FRAC: f64 = 0.20;
 /// Finite score for uncertain / unknown fuse — never +∞.
@@ -354,6 +360,64 @@ pub fn execute_strip_mine_intent(
     matter::extract_state(world, system_id, STRIP_MINE_EXTRACT).unwrap_or(0.0)
 }
 
+
+fn ensure_system_body(world: &mut World, system_id: EntityId) -> EntityId {
+    if let Some((id, _)) = world.ledger.bodies_for_system(system_id).next() {
+        return *id;
+    }
+    world.ledger.spawn_body(system_id)
+}
+
+/// Ai PlantCity: ensure a body, seed pops, apply D facility soaks.
+pub fn execute_plant_city_intent(
+    world: &mut World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) -> EntityId {
+    let body_id = ensure_system_body(world, system_id);
+    if let Some(body) = world.ledger.get_body_mut(body_id) {
+        body.pops = (body.pops + PLANT_CITY_POPS).max(PLANT_CITY_POPS);
+        if let Some(empire) = world.ledger.get_empire(empire_id) {
+            let empire = empire.clone();
+            if let Some(body) = world.ledger.get_body_mut(body_id) {
+                worlds::apply_facility_soaks(body, &empire);
+            }
+        }
+    }
+    body_id
+}
+
+/// Ai PlantYard: ensure a body, raise structure soak to yard pad, apply facility soaks.
+pub fn execute_plant_yard_intent(
+    world: &mut World,
+    empire_id: EntityId,
+    system_id: EntityId,
+) -> EntityId {
+    let body_id = ensure_system_body(world, system_id);
+    if let Some(body) = world.ledger.get_body_mut(body_id) {
+        body.structure_soak = body.structure_soak.max(PLANT_YARD_STRUCTURE_SOAK);
+    }
+    if let Some(empire) = world.ledger.get_empire(empire_id).cloned() {
+        if let Some(body) = world.ledger.get_body_mut(body_id) {
+            worlds::apply_facility_soaks(body, &empire);
+        }
+    }
+    body_id
+}
+
+/// Ai Fortify: ensure a body, raise structure soak to fortify floor.
+pub fn execute_fortify_intent(
+    world: &mut World,
+    _empire_id: EntityId,
+    system_id: EntityId,
+) -> EntityId {
+    let body_id = ensure_system_body(world, system_id);
+    if let Some(body) = world.ledger.get_body_mut(body_id) {
+        body.structure_soak = body.structure_soak.max(FORTIFY_STRUCTURE_SOAK);
+    }
+    body_id
+}
+
 pub fn try_emit_order(
     world: &mut World,
     empire_id: EntityId,
@@ -430,6 +494,23 @@ pub fn try_emit_order(
     if matches!(intent, OrderIntent::StripMine) && matches!(source, OrderSource::Ai) {
         if let Some(sys) = target_ref {
             let _ = execute_strip_mine_intent(world, empire_id, sys);
+        }
+    }
+    // Ai PlantCity / PlantYard / Fortify → body seed / soak floors (D soaks).
+    if matches!(source, OrderSource::Ai) {
+        if let Some(sys) = target_ref {
+            match intent {
+                OrderIntent::PlantCity => {
+                    let _ = execute_plant_city_intent(world, empire_id, sys);
+                }
+                OrderIntent::PlantYard => {
+                    let _ = execute_plant_yard_intent(world, empire_id, sys);
+                }
+                OrderIntent::Fortify => {
+                    let _ = execute_fortify_intent(world, empire_id, sys);
+                }
+                _ => {}
+            }
         }
     }
     Ok(Some(id))
@@ -1785,6 +1866,75 @@ mod minds_tests {
             .map(|d| d.quantity)
             .sum();
         assert!((qty - 75.0).abs() < 1e-6, "100-25=75 left, got {qty}");
+    }
+
+
+    #[test]
+    fn ai_plant_city_seeds_pops() {
+        let mut w = World::new(150);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        // Clear pops on any seeded body so PlantCity seed is observable.
+        for (bid, _) in w.ledger.bodies_for_system(sys).map(|(id, b)| (*id, b.pops)).collect::<Vec<_>>() {
+            w.ledger.get_body_mut(bid).unwrap().pops = 0.0;
+        }
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::PlantCity,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("plant city");
+        assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::PlantCity);
+        let pops: f64 = w
+            .ledger
+            .bodies_for_system(sys)
+            .map(|(_, b)| b.pops)
+            .sum();
+        assert!(
+            (pops - PLANT_CITY_POPS).abs() < 1e-9,
+            "expected {PLANT_CITY_POPS} pops, got {pops}"
+        );
+    }
+
+    #[test]
+    fn ai_plant_yard_raises_structure_soak() {
+        let mut w = World::new(151);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::PlantYard,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("plant yard");
+        assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::PlantYard);
+        let (_bid, body) = w.ledger.bodies_for_system(sys).next().expect("body");
+        assert!(body.structure_soak >= PLANT_YARD_STRUCTURE_SOAK);
+    }
+
+    #[test]
+    fn ai_fortify_raises_structure_soak() {
+        let mut w = World::new(152);
+        let empire = *w.ledger.empires().next().unwrap().0;
+        let sys = *w.ledger.systems().next().unwrap().0;
+        let id = try_emit_order(
+            &mut w,
+            empire,
+            OrderIntent::Fortify,
+            Some(sys),
+            OrderSource::Ai,
+        )
+        .unwrap()
+        .expect("fortify");
+        assert_eq!(w.ledger.get_order(id).unwrap().intent, OrderIntent::Fortify);
+        let (_bid, body) = w.ledger.bodies_for_system(sys).next().expect("body");
+        assert!(body.structure_soak >= FORTIFY_STRUCTURE_SOAK);
     }
 
     #[test]
